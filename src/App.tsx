@@ -8,37 +8,41 @@ import SearchModal from './components/layout/SearchModal';
 import { useAppStore } from './store/useAppStore';
 
 export default function App() {
-  // Ahora extraemos 'setSearchOpen' directamente de nuestro cerebro global
-  const { themeColor, bgImage, setSearchOpen } = useAppStore();
-  
-  // Solo mantenemos el estado local para el panel de configuración
+  const { themeColor, bgImage, bgBlur, bgBloom, setSearchOpen } = useAppStore();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   return (
     <BrowserRouter>
-      <div 
-        className="flex h-screen text-white overflow-hidden font-sans transition-all duration-500 bg-cover bg-center"
-        style={{ 
-          backgroundColor: themeColor,
-          backgroundImage: bgImage ? `url(${bgImage})` : 'none'
-        }}
-      >
-        <Sidebar 
-          onOpenSettings={() => setIsSettingsOpen(true)} 
-          // Conectamos el botón de la barra lateral directo al estado global
-          onOpenSearch={() => setSearchOpen(true)}
-        />
+      <div className="h-screen w-full text-white overflow-hidden font-sans relative" style={{ backgroundColor: themeColor }}>
         
-        <main className="flex-1 overflow-y-auto bg-black/20 backdrop-blur-[2px] relative">
-          <Routes>
-            <Route path="/" element={<Workspace />} />
-            <Route path="/pizarra" element={<Whiteboard />} />
-          </Routes>
-        </main>
+        {/* FONDO AISLADO */}
+        {bgImage && (
+          <div 
+            className="absolute inset-0 z-0 bg-cover bg-center transition-all duration-300"
+            style={{ 
+              backgroundImage: `url(${bgImage})`,
+              filter: `blur(${bgBlur}px) brightness(${bgBloom}%)`,
+              transform: 'scale(1.05)'
+            }}
+          />
+        )}
+
+        <div className="relative z-10 flex h-full w-full">
+          <Sidebar 
+            // AQUÍ ESTÁ LA MAGIA: El "!" invierte el estado actual cada vez que haces clic
+            onOpenSettings={() => setIsSettingsOpen(!isSettingsOpen)} 
+            onOpenSearch={() => setSearchOpen(true)}
+          />
+          
+          <main className="flex-1 overflow-y-auto bg-black/40">
+            <Routes>
+              <Route path="/" element={<Workspace />} />
+              <Route path="/pizarra" element={<Whiteboard />} />
+            </Routes>
+          </main>
+        </div>
 
         {isSettingsOpen && <SettingsPanel onClose={() => setIsSettingsOpen(false)} />}
-        
-        {/* El buscador ahora es 100% independiente sin props (propiedades) */}
         <SearchModal />
       </div>
     </BrowserRouter>
