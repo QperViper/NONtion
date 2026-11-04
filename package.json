@@ -4,8 +4,12 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
+    "dev": "node scripts/dev.mjs",
+    "dev:ui": "vite",
+    "dev:api": "node --import ./backend/node_modules/tsx/dist/loader.mjs backend/server.ts",
+    "typecheck": "tsc -b && node backend/node_modules/typescript/bin/tsc -p backend/tsconfig.json --noEmit",
+    "test": "node --import ./backend/node_modules/tsx/dist/loader.mjs --test backend/tests/*.test.ts",
+    "build": "npm run typecheck && vite build",
     "lint": "oxlint",
     "preview": "vite preview"
   },
@@ -34,6 +38,7 @@
     "react-router-dom": "^7.18.4",
     "tailwind-merge": "^3.7.0",
     "tailwindcss": "^4.3.3",
+    "uuid": "^14.0.3",
     "zustand": "^5.0.15"
   },
   "devDependencies": {
@@ -41,6 +46,7 @@
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
+    "@types/uuid": "^11.0.0",
     "@vitejs/plugin-react": "^6.1.1",
     "oxlint": "^1.81.0",
     "typescript": "~6.0.2",

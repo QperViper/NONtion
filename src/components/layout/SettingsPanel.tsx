@@ -1,188 +1,38 @@
+import { Palette, Upload, X } from 'lucide-react';
+import { useRef, useState } from 'react';
 import { useAppStore } from '../../store/useAppStore';
-import { Image as ImageIcon, Palette, X, Upload } from 'lucide-react';
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { controlLabels } from '../../lib/controls';
+import ControlButton from '../ControlButton';
+import VignetteBloomBackground from '../VignetteBloomBackground';
 
-export default function SettingsPanel({ onClose }: { onClose: () => void }) {
-  const { setThemeColor, setBgImage, themeColor, bgImage, bgBlur, setBgBlur, bgBloom, setBgBloom, settingsWidth, setSettingsWidth } = useAppStore();
-  const [imageUrl, setImageUrl] = useState('');
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  
-  // Estado para controlar el redimensionamiento del panel derecho
-  const [isResizing, setIsResizing] = useState(false);
-
-  const startResizing = useCallback(() => setIsResizing(true), []);
-  const stopResizing = useCallback(() => setIsResizing(false), []);
-
-  const resize = useCallback((e: MouseEvent) => {
-    if (isResizing) {
-      const newWidth = window.innerWidth - e.clientX;
-      // Mínimo 100px, máximo casi toda la pantalla
-      if (newWidth >= 100 && newWidth <= window.innerWidth - 60) {
-        setSettingsWidth(newWidth);
-      }
-    }
-  }, [isResizing, setSettingsWidth]);
-
-  useEffect(() => {
-    window.addEventListener('mousemove', resize);
-    window.addEventListener('mouseup', stopResizing);
-    return () => {
-      window.removeEventListener('mousemove', resize);
-      window.removeEventListener('mouseup', stopResizing);
-    };
-  }, [resize, stopResizing]);
-
-  const presetColors = [
-    '#191919', '#1e293b', '#312e81', '#4a044e', '#7f1d1d',
-    '#064e3b', '#14532d', '#b45309', '#0f766e', '#1d4ed8'
-  ];
-
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setBgImage(reader.result as string);
-        e.target.value = ''; 
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  return (
-    <div 
-      className={`fixed right-0 top-0 h-full bg-[#1e1e1e] border-l border-white/10 p-6 shadow-2xl z-50 flex flex-col gap-6 text-white overflow-y-auto ${
-        isResizing ? 'select-none transition-none' : 'transition-all duration-300'
-      }`}
-      style={{ width: settingsWidth }}
-    >
-      {/* TIRADOR DE ARRASTRE EN EL BORDE IZQUIERDO */}
-      <div 
-        onMouseDown={startResizing}
-        className="absolute top-0 -left-1 w-2 h-full cursor-col-resize hover:bg-red-500/50 active:bg-red-500 z-50 transition-colors"
-      />
-
-      <div className="flex justify-between items-center">
-        <h2 className="font-bold flex items-center gap-2"><Palette size={18} /> Apariencia</h2>
-        <button onClick={onClose} className="hover:bg-white/10 p-1 rounded transition"><X size={18} /></button>
+export default function SettingsPanel({onClose}:{onClose:()=>void}) {
+  const s=useAppStore();const [url,setUrl]=useState(''),[busy,setBusy]=useState(false);const input=useRef<HTMLInputElement>(null);
+  return <section className="settings-panel glass-surface" style={{width:s.settingsWidth}} aria-label="Apariencia">
+    <div className="settings-resize" role="separator" aria-orientation="vertical" aria-label="Ancho de ajustes" tabIndex={0}
+      onKeyDown={e=>{if(['ArrowLeft','ArrowRight'].includes(e.key)){e.preventDefault();s.setSettingsWidth(s.settingsWidth+(e.key==='ArrowLeft'?20:-20));}}}
+      onPointerDown={e=>e.currentTarget.setPointerCapture(e.pointerId)} onPointerMove={e=>{if(e.currentTarget.hasPointerCapture(e.pointerId))s.setSettingsWidth(window.innerWidth-e.clientX);}} onPointerUp={e=>e.currentTarget.releasePointerCapture(e.pointerId)}/>
+    <header className="flex justify-between items-center"><h2 className="font-semibold flex items-center gap-2"><Palette size={18}/>Apariencia</h2><ControlButton controlId="settings.close" label="Cerrar ajustes" className="icon-button" icon={<X size={18}/>} onClick={onClose}/></header>
+    <p className="text-sm text-neutral-400">Haz que este espacio se sienta tuyo.</p>
+    <div><h3 className="nav-heading mb-3">COLOR DEL ESPACIO</h3><div className="flex flex-wrap gap-3 mb-4">{['#191919','#1e293b','#312e81','#4a044e','#7f1d1d','#064e3b','#b45309','#0f766e'].map(color=><button key={color} aria-label={`Usar color ${color}`} aria-pressed={s.themeColor===color} className={`color-swatch ${s.themeColor===color?'selected':''}`} style={{backgroundColor:color}} onClick={()=>s.setThemeColor(color)}/>)}</div><label className="field">Color personalizado<input type="color" value={s.themeColor} onChange={e=>s.setThemeColor(e.target.value)}/></label></div>
+    <div className="settings-section"><h3 className="nav-heading mb-3">FONDO DE PANTALLA</h3>
+      <div className="background-choices" role="group" aria-label="Elegir fondo del espacio">
+        <button type="button" aria-pressed={!s.backgroundEffect} className={`background-choice ${!s.backgroundEffect?'selected':''}`} onClick={()=>s.setBackgroundEffect(null)}>
+          <span className="background-color-preview" style={{backgroundColor:s.themeColor}}/><span>Color o imagen</span>
+        </button>
+        <button type="button" aria-pressed={s.backgroundEffect==='vignette-bloom'} className={`background-choice ${s.backgroundEffect==='vignette-bloom'?'selected':''}`} onClick={()=>s.setBackgroundEffect('vignette-bloom')}>
+          <span className="background-effect-preview"><VignetteBloomBackground paused className="background-effect-thumbnail"/></span><span>Vignette Bloom</span>
+        </button>
       </div>
-
-      {/* Selector de Colores Sólidos */}
-      <div>
-        <label className="text-xs font-semibold text-neutral-400 mb-3 block">COLORES RÁPIDOS</label>
-        <div className="flex gap-2 flex-wrap mb-4">
-          {presetColors.map((color) => (
-            <button
-              key={color}
-              onClick={() => setThemeColor(color)}
-              className={`w-8 h-8 rounded-full border-2 transition-all hover:scale-110 ${
-                themeColor === color && !bgImage ? 'border-white' : 'border-transparent'
-              }`}
-              style={{ backgroundColor: color }}
-            />
-          ))}
-        </div>
-
-        <label className="text-xs font-semibold text-neutral-400 mb-2 block">COLOR RGB PERSONALIZADO</label>
-        <div className="flex items-center gap-3 p-2 bg-black/20 rounded border border-white/5">
-          <input 
-            type="color" 
-            value={themeColor}
-            onChange={(e) => setThemeColor(e.target.value)}
-            className="w-10 h-10 rounded cursor-pointer bg-transparent border-0 p-0"
-            title="Abrir paleta RGB"
-          />
-          <span className="text-sm text-neutral-300">Haz clic para elegir color</span>
-        </div>
-      </div>
-
-      <div className="h-px bg-white/10 w-full my-2" />
-
-      {/* Selector de Imagen de Fondo */}
-      <div>
-        <label className="text-xs font-semibold text-neutral-400 mb-4 flex items-center gap-2">
-          <ImageIcon size={14} /> IMAGEN DE FONDO
-        </label>
-        
-        <div className="mb-4">
-          <input 
-            type="file" 
-            accept="image/*"
-            ref={fileInputRef}
-            onChange={handleFileUpload}
-            className="hidden"
-          />
-          <button 
-            onClick={() => fileInputRef.current?.click()}
-            className="w-full flex items-center justify-center gap-2 bg-white/5 hover:bg-white/10 border border-white/10 p-2.5 rounded text-sm transition shrink-0"
-          >
-            <Upload size={16} /> Subir desde tu PC
-          </button>
-        </div>
-
-        <div className="text-xs text-neutral-500 text-center mb-4">- O pega un enlace -</div>
-
-        <div className="flex gap-2 mb-2">
-          <input
-            type="text"
-            placeholder="URL de la imagen..."
-            value={imageUrl}
-            onChange={(e) => setImageUrl(e.target.value)}
-            className="flex-1 w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-red-500 transition"
-          />
-          <button 
-            onClick={() => {
-              if(imageUrl) setBgImage(imageUrl);
-              setImageUrl('');
-            }}
-            className="bg-white/10 hover:bg-white/20 px-3 py-2 rounded text-sm transition font-medium shrink-0"
-          >
-            Aplicar
-          </button>
-        </div>
-
-        {/* AJUSTES DINÁMICOS */}
-        {bgImage && (
-          <div className="mt-6 space-y-5 bg-black/20 p-4 rounded-lg border border-white/5">
-            <div>
-              <div className="flex justify-between text-xs font-semibold text-neutral-400 mb-2">
-                <label>DESENFOQUE</label>
-                <span>{bgBlur}px</span>
-              </div>
-              <input
-                type="range"
-                min="0"
-                max="20"
-                value={bgBlur}
-                onChange={(e) => setBgBlur(Number(e.target.value))}
-                className="w-full accent-red-500 h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer"
-              />
-            </div>
-            
-            <div>
-              <div className="flex justify-between text-xs font-semibold text-neutral-400 mb-2">
-                <label>BLOOM (BRILLO)</label>
-                <span>{bgBloom}%</span>
-              </div>
-              <input
-                type="range"
-                min="50"
-                max="200"
-                value={bgBloom}
-                onChange={(e) => setBgBloom(Number(e.target.value))}
-                className="w-full accent-red-500 h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer"
-              />
-            </div>
-
-            <button 
-              onClick={() => setBgImage(null)}
-              className="w-full mt-4 py-2 text-sm text-red-400 hover:bg-red-500/10 rounded transition border border-red-500/20 shrink-0"
-            >
-              Quitar fondo actual
-            </button>
-          </div>
-        )}
-      </div>
+      {s.backgroundEffect==='vignette-bloom'&&<div className="background-effect-description"><p>Mosaico animado con viñeta y resplandor.</p><p>Se usa la foto y el preset proporcionado de 21st.dev.</p></div>}
+      <input ref={input} type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" onChange={async e=>{const file=e.target.files?.[0];if(!file)return;setBusy(true);try{s.setBgImage(await s.uploadImage(file));}catch{/* displayed globally */}finally{setBusy(false);e.target.value='';}}}/>
+      <ControlButton controlId="settings.upload-background" label="Subir fondo" className="soft-button w-full" disabled={busy} icon={<Upload size={16}/>} onClick={()=>input.current?.click()}>{busy?'Subiendo…':'Elegir imagen o GIF'}</ControlButton>
+      <form className="flex gap-2 mt-3" onSubmit={e=>{e.preventDefault();try{const parsed=new URL(url);if(!['http:','https:'].includes(parsed.protocol))throw new Error();s.setBgImage(parsed.href);setUrl('');}catch{s.setError('Usa una URL http o https válida.');}}}><input aria-label="URL de imagen de fondo" type="url" placeholder="https://…" value={url} onChange={e=>setUrl(e.target.value)} className="text-input min-w-0 flex-1"/><ControlButton controlId="settings.apply-background" label="Aplicar URL de fondo" className="soft-button" type="submit">Aplicar</ControlButton></form>
+      {s.bgImage&&!s.backgroundEffect&&<div className="space-y-4 mt-5"><label className="field">Desenfoque · {s.bgBlur}px<input type="range" min="0" max="30" value={s.bgBlur} onChange={e=>s.setBgBlur(Number(e.target.value))}/></label><label className="field">Brillo · {s.bgBloom}%<input type="range" min="25" max="200" value={s.bgBloom} onChange={e=>s.setBgBloom(Number(e.target.value))}/></label><ControlButton controlId="settings.remove-background" label="Quitar fondo" className="quiet-button text-rose-300" onClick={()=>s.setBgImage(null)}>Quitar fondo</ControlButton></div>}
+      <p className="text-xs text-neutral-500 mt-3">Los archivos subidos se conservan en tu equipo. Las URL externas necesitan conexión a su servidor.</p>
     </div>
-  );
+    <div className="settings-section space-y-4"><h3 className="nav-heading">CONTROLES A TU MEDIDA</h3><ControlButton controlId="settings.customize" label="Activar personalización" className="soft-button w-full" onClick={()=>{s.setCustomizing(true);onClose();}}>Personalizar la interfaz</ControlButton><p className="text-xs text-neutral-400">Clic derecho sobre un control para cambiar emoji, imagen, GIF, colores y forma. Las acciones principales también se pueden mover entre zonas.</p>
+      <label className="flex gap-3 text-sm items-start"><input type="checkbox" checked={s.pauseAnimations} onChange={e=>s.setPauseAnimations(e.target.checked)}/>Reducir animaciones</label>
+      <div className="space-y-1">{Object.keys(s.customizations).map(id=><div key={id} className="flex gap-2 items-center text-xs"><button className="quiet-button truncate flex-1 text-left" onClick={()=>s.setEditingControl(id)}>{controlLabels[id]||'Control personalizado'}{s.customizations[id].hidden?' · oculto':''}</button><button aria-label={`Restaurar ${controlLabels[id]||'control'}`} className="quiet-button" onClick={()=>s.updateControl(id,null)}>Restaurar</button></div>)}</div>
+    </div>
+  </section>;
 }
