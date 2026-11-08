@@ -3,6 +3,7 @@ import { migrate } from './migrate.ts';
 import { pool } from './db.ts';
 import { serveUi } from './ui.ts';
 import { scheduleBackups } from './backup.ts';
+import { cloudConfig, ensureBucket } from './storage.ts';
 
 // --ui: modo de uso diario. La API también entrega la app compilada en el mismo puerto.
 if (process.argv.includes('--ui') && !serveUi(app)) console.warn('No existe dist/. Ejecuta "npm run build" para servir la interfaz.');
@@ -17,6 +18,7 @@ try {
     console.error('No se pudo abrir el puerto', port, (error as {code?: string}).code);
     void pool.end(); process.exitCode = 1;
   });
+  if (cloudConfig()) ensureBucket().then(() => console.log('Imágenes: Supabase Storage listo.'), error => console.error('Supabase Storage no disponible:', (error as Error).message));
   const stopBackups = scheduleBackups();
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.on(signal, () => { stopBackups(); server.close(() => { void pool.end(); }); });

@@ -44,6 +44,26 @@ Las páginas de la versión de desarrollo (puerto 5173) y las del lanzador (puer
 
 Mientras la API está en marcha, crea un respaldo al día en `backend/backups/daily/` y conserva los 14 más recientes. Cada respaldo incluye `database.json` (todas las tablas), las imágenes y, si PostgreSQL está instalado en el equipo, `database.dump` (restaurable con `pg_restore`). Cada carpeta trae un `LEEME.txt` con las instrucciones de restauración. Respaldo manual: `npm run backup`.
 
+## Varios equipos con Supabase
+
+La base de datos y las imágenes pueden vivir en Supabase para usar el mismo espacio en la torre y en el notebook. Cada equipo ejecuta su propia API local (nada queda expuesto en internet) y se conecta a la misma base.
+
+- **Arranque liviano:** al abrir solo se descargan títulos y metadatos; cada página o pizarra se descarga al abrirla. Guardar no devuelve el contenido completo.
+- **Cambios de otros equipos:** se consultan al volver a la ventana y cada 15 s mientras está visible (`/api/changes`, solo lo que cambió). Si una página abierta cambió en otro equipo, se recarga sola. Si ambos editaron el mismo recurso sin sincronizar, aparece el conflicto de siempre para elegir versión.
+- **Preferencias de pantalla** (ancho y estado de la barra lateral, ancho del panel de apariencia) son de cada equipo. Tema, fondo y personalización se comparten.
+- **Imágenes:** se suben a un bucket privado de Supabase Storage. `backend/data/assets/` queda como caché local: una imagen subida desde otro equipo se descarga la primera vez que se ve. Las direcciones `/assets/…` guardadas en las notas no cambian.
+- **Seguridad:** la conexión a la base va cifrada. La migración 003 activa RLS en las tablas para cerrar el acceso por la API pública de Supabase; la app no se ve afectada porque se conecta como dueña de las tablas.
+
+### Pasar tu base local a Supabase (una vez, en el equipo que tiene los datos)
+
+1. En `backend/.env`, mueve tu dirección actual a `LOCAL_DATABASE_URL=` y pon en `DATABASE_URL=` la de Supabase (**Connect → Session pooler**, con tu contraseña). Añade `SUPABASE_URL` y `SUPABASE_SECRET_KEY` (ver `backend/.env.example`).
+2. Doble clic en **`Pasar a Supabase.cmd`**. Detiene nontion, aplica migraciones pendientes a la base local, guarda una copia en `backend/backups/antes-de-supabase-*.json`, crea las tablas en Supabase, copia todo en una sola transacción (verificando los recuentos), sube las imágenes y vuelve a abrir la app.
+3. La base local no se modifica. Si Supabase ya tiene datos, el traspaso se niega; `--reemplazar` los sustituye. Si solo fallan las imágenes, `"Pasar a Supabase.cmd" --solo-imagenes` reintenta ese paso.
+
+### Otro equipo (notebook)
+
+Clona el repositorio, ejecuta `pnpm install` y `pnpm --dir backend install`, crea `backend/.env` con `DATABASE_URL`, `SUPABASE_URL` y `SUPABASE_SECRET_KEY` (sin `LOCAL_DATABASE_URL`) y haz doble clic en `Instalar NONtion.cmd`. No necesita PostgreSQL instalado.
+
 ## Persistencia y recuperación
 
 - El backend aplica migraciones versionadas al arrancar. La primera añade columnas a las tablas existentes; no elimina notas, relaciones ni columnas.

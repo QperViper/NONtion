@@ -1,43 +1,26 @@
 import { create } from 'zustand';
-import type { Block } from '@blocknote/core';
 import { request, assetUrl } from '../lib/api';
 import { draftStorage } from '../lib/drafts';
 import type { Draft } from '../lib/drafts';
 import { SaveQueue } from '../lib/saveQueue';
 import type { SaveState } from '../lib/saveQueue';
 
-export type ResourceKind = 'document' | 'whiteboard';
-export interface ResourceRef { kind: ResourceKind; id: string; }
-export interface Document {
-  id: string; title: string; icon: string | null; coverImage: string | null;
-  content: Block[]; isFavorite: boolean; version: number; deletedAt: string | null; parentId: string | null;
-}
-export interface Whiteboard { id: string; title: string; snapshot: Record<string,unknown>; version: number; deletedAt: string | null; }
-export interface Hiperhilo {
-  id: string; sourceDocId: string | null; sourceBlockId: string | null; sourceText: string;
-  destinationTitle: string; destinationPath: string; destinationType: ResourceKind | null; destinationId: string | null;
-}
-export interface ControlStyle {
-  emoji?: string; image?: string | null; color?: string; background?: string; size?: number;
-  radius?: number; hidden?: boolean; zone?: 'sidebar' | 'toolbar'; order?: number;
-}
-export interface Settings {
-  backgroundEffect: 'vignette-bloom' | null;
-  themeColor: string; bgImage: string | null; bgBlur: number; bgBloom: number; sidebarWidth: number;
-  settingsWidth: number; isSidebarOpen: boolean; avatarImage: string | null; menuIconImage: string | null;
-  customizations: Record<string,ControlStyle>;
-}
+import { boardRow, connectionRow, documentRow, mergeBoard, mergeDocument, patchDocument, readDevicePrefs, serverDevicePrefs, sharedSettings, writeDevicePrefs } from '../lib/resources';
+import type { ControlStyle, DevicePrefs, Document, Hiperhilo, ResourceKind, ResourceRef, Row, Settings, Whiteboard } from '../lib/resources';
+export type { ControlStyle, Document, Hiperhilo, ResourceKind, ResourceRef, Settings, Whiteboard } from '../lib/resources';
 interface PendingConnection { sourceDocId: string; sourceBlockId: string; text: string; apply: (url: string) => void; }
-type Row = Record<string,unknown>;
-interface Bootstrap { settings: Row; documents: Row[]; whiteboards: Row[]; connections: Row[]; }
+interface Bootstrap { cursor: string; settings: Row; documents: Row[]; whiteboards: Row[]; connections: Row[]; }
+interface Changes extends Omit<Bootstrap,'settings'> { settings: Row | null; }
 interface AppState extends Settings {
   isLoaded: boolean; loading: boolean; loadError: string | null; error: string | null;
   settingsVersion: number; documents: Document[]; whiteboards: Whiteboard[]; connections: Hiperhilo[];
   currentDocId: string | null; saveStates: Record<string,SaveState>; generations: Record<string,number>;
   orphanDrafts: Draft[]; panels: ResourceRef[]; replaceTarget: ResourceRef | null;
+  loadErrors: Record<string,string>;
   isSearchOpen: boolean; pendingConnection: PendingConnection | null;
   isCustomizing: boolean; editingControl: string | null; pauseAnimations: boolean;
   fetchInitialData: () => Promise<void>; refresh: () => Promise<void>;
+  loadResource: (ref: ResourceRef) => Promise<void>;
   setError: (error: string | null) => void; retrySaves: () => void;
   resolveConflict: (key: string, keepLocal: boolean) => Promise<void>;
   recoverDraft: (draft: Draft) => Promise<void>;
@@ -61,24 +44,17 @@ interface AppState extends Settings {
   updateControl: (id: string, patch: ControlStyle | null) => void; setPauseAnimations: (value: boolean) => void;
 }
 const defaults: Settings = {backgroundEffect:null,themeColor:'#191919',bgImage:null,bgBlur:2,bgBloom:100,sidebarWidth:256,settingsWidth:360,isSidebarOpen:true,avatarImage:null,menuIconImage:null,customizations:{}};
-function documentRow(d: Row): Document {
-  return {id:String(d.id),title:String(d.title),icon:d.icon as string|null,coverImage:d.cover_image as string|null,content:(d.content || []) as Block[],isFavorite:Boolean(d.is_favorite),version:Number(d.version),deletedAt:d.deleted_at as string|null,parentId:d.parent_id as string|null};
-}
-function boardRow(d: Row): Whiteboard {
-  return {id:String(d.id),title:String(d.name),snapshot:(d.snapshot || {}) as Row,version:Number(d.version),deletedAt:d.deleted_at as string|null};
-}
-function connectionRow(c: Row): Hiperhilo {
-  return {id:String(c.id),sourceDocId:c.source_doc_id as string|null,sourceBlockId:c.source_block_id as string|null,sourceText:String(c.source_text),destinationTitle:String(c.destination_title),destinationPath:String(c.destination_path),destinationType:c.destination_type as ResourceKind|null,destinationId:c.destination_id as string|null};
-}
-function settingsRow(s: Row): Settings {
-  return {backgroundEffect:s.background_effect === 'vignette-bloom' ? 'vignette-bloom' : null,themeColor:String(s.theme_color),bgImage:s.bg_image as string|null,bgBlur:Number(s.bg_blur),bgBloom:Number(s.bg_bloom),sidebarWidth:Number(s.sidebar_width),settingsWidth:Number(s.settings_width),isSidebarOpen:Boolean(s.is_sidebar_open),avatarImage:s.avatar_image as string|null,menuIconImage:s.menu_icon_image as string|null,customizations:(s.customizations || {}) as Settings['customizations']};
-}
 export const resourceKey = (ref: ResourceRef) => `${ref.kind}:${ref.id}`;
 export const resourcePath = (ref: ResourceRef) => ref.kind === 'document' ? `/${ref.id}` : `/pizarra/${ref.id}`;
 let tabId = sessionStorage.getItem('nontion-tab');
 if (!tabId) { tabId = crypto.randomUUID(); sessionStorage.setItem('nontion-tab',tabId); }
 const namespace = `${tabId}|`;
 let bootstrapPromise: Promise<void> | null = null;
+/** Cursor de /api/changes: lo que cambió en otros equipos desde la última consulta. */
+let cursor = '';
+let refreshing: Promise<void> | null = null;
+const loading = new Map<string,Promise<void>>();
+const pendingPatch = (key: string) => queue.pending().find(d => d.key === key)?.patch || {};
 const queue = new SaveQueue(draftStorage, draft => {
   const [kind,...parts] = draft.key.split(':');
   const endpoint = kind === 'settings' ? '/settings' : `/${kind === 'document' ? 'documents' : 'whiteboards'}/${encodeURIComponent(parts.join(':'))}`;
@@ -91,19 +67,29 @@ function applyPatch(key: string, patch: Row) {
   if (key === 'settings:1') useAppStore.setState(patch);
   else {
     const [kind,...ids] = key.split(':'); const id = ids.join(':');
-    if (kind === 'document') useAppStore.setState(s => ({documents:s.documents.map(d => d.id === id ? {...d,...patch} as Document : d)}));
+    if (kind === 'document') useAppStore.setState(s => ({documents:s.documents.map(d => d.id === id ? patchDocument(d,patch) : d)}));
     else useAppStore.setState(s => ({whiteboards:s.whiteboards.map(d => d.id === id ? {...d,...patch} as Whiteboard : d)}));
   }
 }
-function applySaved(key: string, row: Row) {
-  const pending = queue.pending().find(d => d.key === key)?.patch || {};
-  if (key === 'settings:1') useAppStore.setState({...settingsRow(row),...pending,settingsVersion:Number(row.version)});
-  else {
-    const data = key.startsWith('document:') ? documentRow(row) : boardRow(row);
-    if (key.startsWith('document:') && !useAppStore.getState().documents.some(d=>d.id===data.id)) useAppStore.setState(s=>({documents:[...s.documents,data as Document]}));
-    if (key.startsWith('whiteboard:') && !useAppStore.getState().whiteboards.some(d=>d.id===data.id)) useAppStore.setState(s=>({whiteboards:[...s.whiteboards,data as Whiteboard]}));
-    applyPatch(key,{...data,...pending});
+/** Inserta o combina una fila del servidor y vuelve a aplicar encima los cambios aún pendientes de este equipo. */
+function upsertRow(key: string, row: Row) {
+  if (key.startsWith('document:')) {
+    const incoming = documentRow(row);
+    useAppStore.setState(s => s.documents.some(d => d.id === incoming.id)
+      ? {documents:s.documents.map(d => d.id === incoming.id ? mergeDocument(d,incoming) : d)}
+      : {documents:[...s.documents,incoming]});
+  } else {
+    const incoming = boardRow(row);
+    useAppStore.setState(s => s.whiteboards.some(d => d.id === incoming.id)
+      ? {whiteboards:s.whiteboards.map(d => d.id === incoming.id ? mergeBoard(d,incoming) : d)}
+      : {whiteboards:[...s.whiteboards,incoming]});
   }
+  const pending = pendingPatch(key);
+  if (Object.keys(pending).length) applyPatch(key,pending);
+}
+function applySaved(key: string, row: Row) {
+  if (key === 'settings:1') useAppStore.setState({...sharedSettings(row),...pendingPatch(key),settingsVersion:Number(row.version)});
+  else upsertRow(key,row);
 }
 function editResource(kind: ResourceKind,id: string,patch: Row) {
   const s = useAppStore.getState();
@@ -112,9 +98,10 @@ function editResource(kind: ResourceKind,id: string,patch: Row) {
   const key = resourceKey({kind,id}); applyPatch(key,patch);
   void queue.enqueue(key,resource.version,patch);
 }
+function setDevice(patch: Partial<DevicePrefs>) { writeDevicePrefs(patch); useAppStore.setState(patch); }
 export const useAppStore = create<AppState>((set,get) => ({
   ...defaults,isLoaded:false,loading:false,loadError:null,error:null,settingsVersion:1,
-  documents:[],whiteboards:[],connections:[],currentDocId:null,saveStates:{},generations:{},orphanDrafts:[],panels:[],replaceTarget:null,
+  documents:[],whiteboards:[],connections:[],loadErrors:{},currentDocId:null,saveStates:{},generations:{},orphanDrafts:[],panels:[],replaceTarget:null,
   isSearchOpen:false,pendingConnection:null,isCustomizing:false,editingControl:null,pauseAnimations:localStorage.getItem('nontion-pause-animations') === 'true' || (localStorage.getItem('nontion-pause-animations') === null && window.matchMedia('(prefers-reduced-motion: reduce)').matches),
   setError:error => set({error}),
   fetchInitialData: () => {
@@ -124,7 +111,8 @@ export const useAppStore = create<AppState>((set,get) => ({
     bootstrapPromise = (async () => {
       try {
         const data = await request<Bootstrap>('/bootstrap');
-        set({...settingsRow(data.settings),settingsVersion:Number(data.settings.version),documents:data.documents.map(documentRow),whiteboards:data.whiteboards.map(boardRow),connections:data.connections.map(connectionRow)});
+        cursor = data.cursor;
+        set({...sharedSettings(data.settings),...serverDevicePrefs(data.settings),...readDevicePrefs(),settingsVersion:Number(data.settings.version),documents:data.documents.map(documentRow),whiteboards:data.whiteboards.map(boardRow),connections:data.connections.map(connectionRow)});
         const drafts = await draftStorage.all().catch(() => { set({error:'El navegador no permite respaldar borradores. Mantén la pestaña abierta si hay cambios pendientes.'}); return []; });
         const orphanDrafts=drafts.filter(d => !d.key.startsWith(namespace));
         for (const draft of drafts.filter(d => d.key.startsWith(namespace))) {
@@ -140,25 +128,65 @@ export const useAppStore = create<AppState>((set,get) => ({
     })();
     return bootstrapPromise;
   },
-  refresh: async () => {
-    if (!get().isLoaded) return;
-    try {
-      const data = await request<Bootstrap>('/bootstrap');
-      const generations = {...get().generations};
-      const documents = data.documents.map(row => {
-        const key = `document:${row.id}`, current = get().documents.find(d => d.id === row.id);
-        if (queue.has(key)) return current || documentRow(row);
-        if (current && current.version !== Number(row.version)) generations[key] = (generations[key] || 0)+1;
-        return documentRow(row);
-      });
-      const whiteboards = data.whiteboards.map(row => {
-        const key = `whiteboard:${row.id}`, current = get().whiteboards.find(d => d.id === row.id);
-        if (queue.has(key)) return current || boardRow(row);
-        if (current && current.version !== Number(row.version)) generations[key] = (generations[key] || 0)+1;
-        return boardRow(row);
-      });
-      set({documents,whiteboards,connections:data.connections.map(connectionRow),generations,...(!queue.has('settings:1') ? {...settingsRow(data.settings),settingsVersion:Number(data.settings.version)} : {})});
-    } catch { /* Pending writes remain visible; a background refresh never clears local state. */ }
+  refresh: () => {
+    if (!get().isLoaded || !cursor) return Promise.resolve();
+    refreshing ??= (async () => {
+      try {
+        const data = await request<Changes>(`/changes?since=${cursor}`);
+        const reload: ResourceRef[] = [];
+        const generations = {...get().generations};
+        const merge = <T extends Document | Whiteboard>(kind: ResourceKind, list: T[], rows: Row[], toItem: (row: Row) => T, mergeItem: (a: T | undefined, b: T) => T) => {
+          const next = [...list];
+          for (const row of rows) {
+            const incoming = toItem(row), key = `${kind}:${incoming.id}`, index = next.findIndex(d => d.id === incoming.id);
+            // Lo pendiente en este equipo manda; un choque real aparece como conflicto al guardar.
+            if (queue.has(key)) continue;
+            if (index < 0) { next.push(incoming); continue; }
+            const current = next[index];
+            // Contenido abierto que cambió en otro equipo: se mantiene hasta que llegue la versión nueva.
+            if (current.loaded && current.version !== incoming.version) reload.push({kind,id:incoming.id});
+            next[index] = mergeItem(current,incoming);
+          }
+          return next;
+        };
+        const documents = merge('document',get().documents,data.documents,documentRow,mergeDocument);
+        const whiteboards = merge('whiteboard',get().whiteboards,data.whiteboards,boardRow,mergeBoard);
+        const connections = [...get().connections];
+        for (const row of data.connections.map(connectionRow)) {
+          const index = connections.findIndex(c => c.id === row.id);
+          if (index < 0) connections.unshift(row); else connections[index] = row;
+        }
+        const settings = data.settings && !queue.has('settings:1') ? {...sharedSettings(data.settings),settingsVersion:Number(data.settings.version)} : {};
+        set({documents,whiteboards,connections,generations,...settings});
+        cursor = data.cursor;
+        for (const ref of reload) {
+          try {
+            await get().loadResource(ref);
+            set(s => ({generations:{...s.generations,[resourceKey(ref)]:(s.generations[resourceKey(ref)] || 0)+1}}));
+          } catch { /* se reintentará en la próxima consulta */ }
+        }
+      } catch { /* Pending writes remain visible; a background refresh never clears local state. */ }
+      finally { refreshing = null; }
+    })();
+    return refreshing;
+  },
+  loadResource: ref => {
+    const key = resourceKey(ref);
+    let task = loading.get(key);
+    if (!task) {
+      task = (async () => {
+        try {
+          const row = await request<Row>(`/${ref.kind === 'document' ? 'documents' : 'whiteboards'}/${encodeURIComponent(ref.id)}`);
+          upsertRow(key,row);
+          set(s => { const loadErrors = {...s.loadErrors}; delete loadErrors[key]; return {loadErrors}; });
+        } catch (e) {
+          set(s => ({loadErrors:{...s.loadErrors,[key]:(e as Error).message || 'No se pudo abrir este recurso.'}}));
+          throw e;
+        } finally { loading.delete(key); }
+      })();
+      loading.set(key,task);
+    }
+    return task;
   },
   retrySaves:() => queue.retry(),
   resolveConflict: async (key,keepLocal) => {
@@ -167,6 +195,11 @@ export const useAppStore = create<AppState>((set,get) => ({
     try {
       if (keepLocal) applySaved(key,remote);
       await queue.resolve(key,remote,keepLocal);
+      // "Usar servidor": si solo había metadatos del servidor, se descarga su contenido completo.
+      if (!keepLocal && key !== 'settings:1') {
+        const [kind,...ids] = key.split(':');
+        await get().loadResource({kind:kind as ResourceKind,id:ids.join(':')});
+      }
       set(s => ({generations:{...s.generations,[key]:(s.generations[key] || 0)+1}}));
     } catch(e) { set({error:(e as Error).message}); }
   },
@@ -194,9 +227,9 @@ export const useAppStore = create<AppState>((set,get) => ({
   setBackgroundEffect:backgroundEffect => { void get().syncSettings({backgroundEffect}); },
   setBgBlur:bgBlur => { void get().syncSettings({bgBlur}); },
   setBgBloom:bgBloom => { void get().syncSettings({bgBloom}); },
-  setSidebarWidth:value => { void get().syncSettings({sidebarWidth:Math.max(180,Math.min(600,value))}); },
-  setSettingsWidth:value => { void get().syncSettings({settingsWidth:Math.max(300,Math.min(700,value))}); },
-  toggleSidebar:() => { void get().syncSettings({isSidebarOpen:!get().isSidebarOpen}); },
+  setSidebarWidth:value => setDevice({sidebarWidth:Math.max(180,Math.min(600,value))}),
+  setSettingsWidth:value => setDevice({settingsWidth:Math.max(300,Math.min(700,value))}),
+  toggleSidebar:() => setDevice({isSidebarOpen:!get().isSidebarOpen}),
   setAvatarImage:avatarImage => { void get().syncSettings({avatarImage}); },
   setMenuIconImage:menuIconImage => { void get().syncSettings({menuIconImage}); },
   createDocument:async () => {
@@ -246,13 +279,18 @@ export const useAppStore = create<AppState>((set,get) => ({
 if (typeof window !== 'undefined') {
   const online=() => queue.retry();
   const focus=() => { void useAppStore.getState().refresh(); };
+  // Cambios hechos en otro equipo: se consultan cada 15 s mientras la ventana está visible.
+  const poll=setInterval(() => { if (document.visibilityState === 'visible') void useAppStore.getState().refresh(); },15000);
+  const visible=() => { if (document.visibilityState === 'visible') void useAppStore.getState().refresh(); };
+  document.addEventListener('visibilitychange',visible);
   const beforeUnload=(event:BeforeUnloadEvent) => {
     if (queue.pending().length) { event.preventDefault(); event.returnValue = ''; }
   };
   window.addEventListener('online',online);
+  window.addEventListener('online',focus);
   window.addEventListener('focus',focus);
   window.addEventListener('beforeunload',beforeUnload);
   import.meta.hot?.dispose(()=>{
-    queue.stop();window.removeEventListener('online',online);window.removeEventListener('focus',focus);window.removeEventListener('beforeunload',beforeUnload);
+    queue.stop();clearInterval(poll);document.removeEventListener('visibilitychange',visible);window.removeEventListener('online',focus);window.removeEventListener('online',online);window.removeEventListener('focus',focus);window.removeEventListener('beforeunload',beforeUnload);
   });
 }

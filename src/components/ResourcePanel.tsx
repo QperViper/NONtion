@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, useRef } from 'react';
+import { Component, lazy, Suspense, useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { ImagePlus, SmilePlus, Star, X, ArrowUpRight, Link2, RotateCcw } from 'lucide-react';
 import { useAppStore, resourceKey } from '../store/useAppStore';
@@ -6,7 +6,6 @@ import type { ResourceRef } from '../store/useAppStore';
 import ControlButton from './ControlButton';
 import ImageAsset from './ImageAsset';
 import { exportJson } from '../lib/exportJson';
-import { threadIds } from '../lib/hyperthreads';
 
 const Workspace=lazy(()=>import('../pages/Workspace'));
 const Whiteboard=lazy(()=>import('../pages/Whiteboard'));
@@ -22,11 +21,16 @@ export default function ResourcePanel({resource,onClose,onNavigate}:{resource:Re
   const allDocuments=useAppStore(s=>s.documents);
   const generation=useAppStore(s=>s.generations[resourceKey(resource)] || 0);
   const status=useAppStore(s=>s.saveStates[resourceKey(resource)]);
+  const loadError=useAppStore(s=>s.loadErrors[resourceKey(resource)]);
   const item=resource.kind==='document'?doc:board;
+  const needsContent=Boolean(item&&!item.loaded&&!item.deletedAt);
+  // El contenido no viene en el arranque: se descarga al abrir la página o pizarra.
+  const {kind,id}=resource;
+  useEffect(()=>{if(needsContent)useAppStore.getState().loadResource({kind,id}).catch(()=>{});},[needsContent,kind,id]);
   const iconInput=useRef<HTMLInputElement>(null),coverInput=useRef<HTMLInputElement>(null);
   if(!item)return <section className="resource-panel p-8"><h1 className="text-xl mb-2">Recurso no encontrado</h1><p className="text-neutral-400">La dirección no corresponde a una página o pizarra de este espacio.</p>{onClose&&<button className="soft-button mt-4" onClick={onClose}>Cerrar panel</button>}</section>;
   const editTitle=(title:string)=>resource.kind==='document'?useAppStore.getState().updateDocument(item.id,{title}):useAppStore.getState().updateWhiteboard(item.id,{title});
-  const liveConnections=connections.filter(c=>!c.sourceBlockId || threadIds(allDocuments.find(d=>d.id===c.sourceDocId)?.content||[]).has(c.id));
+  const liveConnections=connections.filter(c=>!c.sourceBlockId || allDocuments.find(d=>d.id===c.sourceDocId)?.threadLinks.includes(c.id));
   const backlinks=liveConnections.filter(c=>c.destinationId===item.id&&c.destinationType===resource.kind);
   const outbound=liveConnections.filter(c=>resource.kind==='document'&&c.sourceDocId===item.id);
   return <section className={`resource-panel ${resource.kind==='whiteboard'?'board-panel':''}`} data-resource={resourceKey(resource)}>
@@ -48,9 +52,10 @@ export default function ResourcePanel({resource,onClose,onNavigate}:{resource:Re
         </>}
         <input aria-label={resource.kind==='document'?'Título de página':'Nombre de pizarra'} className="page-title" placeholder="Sin título" maxLength={255} value={item.title} onChange={e=>editTitle(e.target.value)}/>
       </div>
-      <EditorBoundary key={`${resourceKey(resource)}:${generation}`}><Suspense fallback={<div className="p-8 text-neutral-400">Abriendo {resource.kind==='document'?'editor':'lienzo'}…</div>}>
+      {needsContent?<div className="p-8 text-neutral-400" role="status">{loadError?<>{loadError} <button className="soft-button ml-2" onClick={()=>{useAppStore.getState().loadResource(resource).catch(()=>{});}}>Reintentar</button></>:`Descargando ${resource.kind==='document'?'la página':'la pizarra'}…`}</div>
+      :<EditorBoundary key={`${resourceKey(resource)}:${generation}`}><Suspense fallback={<div className="p-8 text-neutral-400">Abriendo {resource.kind==='document'?'editor':'lienzo'}…</div>}>
         {resource.kind==='document'?<Workspace documentId={item.id}/>:<Whiteboard boardId={item.id}/>}
-      </Suspense></EditorBoundary>
+      </Suspense></EditorBoundary>}
     </>}
     {(backlinks.length>0||outbound.length>0)&&<footer className="connections-footer">
       <h2 className="flex items-center gap-2 text-xs text-neutral-400 uppercase tracking-wider mb-3"><Link2 size={14}/>Conexiones</h2>

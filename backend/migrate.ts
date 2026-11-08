@@ -1,9 +1,10 @@
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { pool } from './db.ts';
+import type { Pool } from 'pg';
 
-export async function migrate() {
-  const client = await pool.connect();
+export async function migrate(target: Pool = pool) {
+  const client = await target.connect();
   try {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock(78163412)');

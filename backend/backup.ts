@@ -4,9 +4,9 @@ import { copyFile, link, mkdir, readdir, rename, rm, stat, writeFile } from 'nod
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pool } from './db.ts';
+import { assetsDir, cloudConfig, syncCacheFromCloud } from './storage.ts';
 
 export const backupRoot = fileURLToPath(new URL('./backups/daily/', import.meta.url));
-const assetsDir = fileURLToPath(new URL('./data/assets/', import.meta.url));
 const KEEP = 14;
 const HOUR = 60 * 60 * 1000;
 const MAX_AGE = 20 * HOUR;
@@ -54,6 +54,7 @@ async function snapshotAssets(target: string) {
   await mkdir(target, { recursive: true });
   let count = 0;
   for (const name of await readdir(assetsDir)) {
+    if (name.startsWith('.')) continue; // descargas a medio escribir
     const from = path.join(assetsDir, name);
     if (!(await stat(from)).isFile()) continue;
     try { await link(from, path.join(target, name)); } catch { await copyFile(from, path.join(target, name)); }
@@ -83,6 +84,12 @@ export async function backupNow(): Promise<string> {
       throw error;
     } finally { client.release(); }
     await writeFile(path.join(partial, 'database.json'), JSON.stringify({ createdAt: new Date().toISOString(), tables }));
+    // Con Supabase, la carpeta local es una caché: primero se completan las imágenes subidas desde otro equipo.
+    let cloudNote = '';
+    if (cloudConfig()) {
+      try { cloudNote = ` (descargadas de la nube para completar: ${await syncCacheFromCloud()})`; }
+      catch (error) { cloudNote = ` (no se pudo completar desde la nube: ${(error as Error).message})`; }
+    }
     const assets = await snapshotAssets(path.join(partial, 'assets'));
     let dump = 'no disponible (pg_dump no está instalado en este equipo)';
     const pgDump = findPgDump() ?? (process.platform === 'win32' ? await findWindowsPgDump() : null);
@@ -95,7 +102,7 @@ export async function backupNow(): Promise<string> {
     await writeFile(path.join(partial, 'LEEME.txt'), [
       `Respaldo de nontion · ${new Date().toLocaleString('es')}`,
       `Tablas: ${Object.entries(tables).map(([t, rows]) => `${t} (${rows.length})`).join(', ')}`,
-      `Imágenes: ${assets}`,
+      `Imágenes: ${assets}${cloudNote}`,
       `Volcado pg_dump: ${dump}`,
       '',
       'database.json contiene todas las filas. Para restaurar database.dump:',

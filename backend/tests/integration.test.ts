@@ -21,12 +21,14 @@ test('API y PostgreSQL: persistencia, versiones, hiperhilos, papelera y archivos
       assert.deepEqual(outcomes.map(r=>r.status).sort(),[200,409]);
       const conflict=outcomes.find(r=>r.status===409)!;assert.equal(conflict.data.current.version,2);
       const saved=await call(`/documents/${id}`,'PATCH',{version:2,title:'QA API temporal',content:[{id:'qa-block',type:'paragraph',props:{},content:[{type:'text',text:'Persistente',styles:{}}],children:[]}]});
-      assert.equal(saved.status,200);assert.equal(saved.data.content[0].content[0].text,'Persistente');
+      assert.equal(saved.status,200);assert.equal(saved.data.content,undefined,'PATCH no repite el contenido');
+      const full=await call(`/documents/${id}`);assert.equal(full.status,200);assert.equal(full.data.content[0].content[0].text,'Persistente');
     });
     const board=await call('/whiteboards','POST',{title:'QA API lienzo'});assert.equal(board.status,201);boards.push(board.data.id);
     await t.test('un snapshot JSONB se conserva íntegro',async()=>{
       const snapshot={document:{schema:{schemaVersion:2,sequences:{}},store:{'page:qa':{id:'page:qa',typeName:'page',name:'QA'}}}};
-      const result=await call(`/whiteboards/${board.data.id}`,'PATCH',{version:1,snapshot});assert.equal(result.status,200);assert.deepEqual(result.data.snapshot,snapshot);
+      const result=await call(`/whiteboards/${board.data.id}`,'PATCH',{version:1,snapshot});assert.equal(result.status,200);assert.equal(result.data.snapshot,undefined);
+      assert.deepEqual((await call(`/whiteboards/${board.data.id}`)).data.snapshot,snapshot);
     });
     await t.test('conexión estable, creación idempotente y papelera reversible',async()=>{
       const threadId=randomUUID();threads.push(threadId);
@@ -37,6 +39,33 @@ test('API y PostgreSQL: persistencia, versiones, hiperhilos, papelera y archivos
       const denied=await call('/connections','POST',{...connection,id:randomUUID()});assert.equal(denied.status,404);
       const restored=await call(`/whiteboards/${board.data.id}`,'PATCH',{version:3,deletedAt:null});assert.equal(restored.status,200);assert.equal(restored.data.deleted_at,null);
       const bootstrap=await call('/bootstrap');assert.equal(bootstrap.status,200);assert.equal(bootstrap.data.connections.filter((c:{id:string})=>c.id===threadId).length,1);
+    });
+    await t.test('sincronización: arranque liviano, cambios desde un cursor y escrituras que confirman tarde',async()=>{
+      const boot=await call('/bootstrap');assert.match(boot.data.cursor,/^\d+$/);
+      const mine=boot.data.documents.find((d:{id:string})=>d.id===id);
+      assert.equal(mine.content,undefined,'el arranque no trae contenido');assert.ok(Array.isArray(mine.thread_links));
+      assert.equal(boot.data.whiteboards.find((b:{id:string})=>b.id===board.data.id).snapshot,undefined);
+      let cursor=boot.data.cursor;
+      const quiet=await call(`/changes?since=${cursor}`);
+      assert.equal(quiet.status,200);cursor=quiet.data.cursor;
+      const before=await call(`/documents/${id}`);
+      const linked=[{id:'qa-link',type:'paragraph',props:{},content:[{type:'link',href:'/hilo/qa-123',content:[{type:'text',text:'x',styles:{}}]}],children:[]}];
+      const edited=await call(`/documents/${id}`,'PATCH',{version:before.data.version,content:linked});assert.deepEqual(edited.data.thread_links,['/hilo/qa-123']);
+      const changed=await call(`/changes?since=${cursor}`);
+      assert.deepEqual(changed.data.documents.map((d:{id:string})=>d.id),[id]);assert.equal(changed.data.documents[0].content,undefined);
+      assert.deepEqual(changed.data.whiteboards,[]);cursor=changed.data.cursor;
+      // Otro equipo abre una transacción, escribe y confirma DESPUÉS de que este consulte.
+      const other=await pool.connect();
+      try {
+        await other.query('BEGIN');await other.query("UPDATE whiteboards SET name='QA tarde' WHERE id=$1",[board.data.id]);
+        const during=await call(`/changes?since=${cursor}`);
+        assert.equal(during.data.whiteboards.length,0,'lo no confirmado todavía no se ve');
+        await other.query('COMMIT');
+        const after=await call(`/changes?since=${during.data.cursor}`);
+        assert.deepEqual(after.data.whiteboards.map((b:{name:string})=>b.name),['QA tarde'],'no se pierde aunque confirmó tarde');
+      } finally { other.release(); }
+      assert.equal((await call('/changes?since=abc')).status,400);
+      assert.equal((await call(`/whiteboards/no-existe-${randomUUID()}`)).status,404);
     });
     await t.test('errores HTTP explícitos para entradas y recursos inválidos',async()=>{
       assert.equal((await call(`/documents/${id}`,'PATCH',{title:'sin versión'})).status,400);

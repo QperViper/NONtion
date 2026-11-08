@@ -2,10 +2,10 @@ import express from 'express';
 import type { ErrorRequestHandler } from 'express';
 import cors from 'cors';
 import { randomUUID } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
 import { pool } from './db.ts';
+import type { PoolClient } from 'pg';
 import { HttpError, object, text, uuid, validatePatch } from './validation.ts';
+import { assetsDir, cloudAssets, saveAsset } from './storage.ts';
 
 export const app = express();
 app.disable('x-powered-by');
@@ -14,8 +14,8 @@ app.use(cors({ origin(origin, callback) {
   else callback(new HttpError(403, 'Origen no permitido.'));
 } }));
 app.use(express.json({ limit: '20mb' }));
-const assets = new URL('./data/assets/', import.meta.url);
-app.use('/assets', express.static(fileURLToPath(assets), { immutable: true, maxAge: '1y', setHeaders(res) { res.setHeader('X-Content-Type-Options', 'nosniff'); } }));
+// Caché local primero; lo que falte se descarga de Supabase Storage (si está configurado).
+app.use('/assets', express.static(assetsDir, { immutable: true, maxAge: '1y', setHeaders(res) { res.setHeader('X-Content-Type-Options', 'nosniff'); } }), cloudAssets);
 app.post('/api/assets', express.raw({ type: ['image/png','image/jpeg','image/webp','image/gif'], limit: '12mb' }), async (req, res) => {
   const data = req.body;
   if (!Buffer.isBuffer(data) || !data.length) throw new HttpError(400, 'Sube PNG, JPG, WebP o GIF (máximo 12 MB).');
@@ -27,22 +27,55 @@ app.post('/api/assets', express.raw({ type: ['image/png','image/jpeg','image/web
   if (!valid) throw new HttpError(400, 'El archivo no corresponde a su formato.');
   const extension = ({ 'image/png':'png','image/jpeg':'jpg','image/webp':'webp','image/gif':'gif' } as Record<string,string>)[mime!];
   const filename = `${randomUUID()}.${extension}`;
-  await mkdir(assets, { recursive: true });
-  await writeFile(new URL(filename, assets), data, { flag: 'wx' });
+  try { await saveAsset(filename, data); }
+  catch (error) { console.error('No se pudo guardar la imagen:', (error as Error).message); throw new HttpError(502, 'No se pudo guardar la imagen en la nube. Revisa tu conexión y vuelve a intentarlo.'); }
   res.status(201).json({ url: `/assets/${filename}` });
 });
 app.get('/api/health', async (_req,res) => { await pool.query('SELECT 1'); res.json({ ok: true }); });
-app.get('/api/bootstrap', async (_req,res) => {
+// Metadatos sin el contenido: el contenido de cada página o pizarra se pide al abrirla.
+// thread_links permite mostrar conexiones entrantes sin descargar la página de origen.
+const DOC_META = `id,parent_id,title,icon,cover_image,is_favorite,created_at,updated_at,version,deleted_at,
+  jsonb_path_query_array(content,'strict $.** ? (@.type == "link" && @.href starts with "/hilo/").href') AS thread_links`;
+const BOARD_META = 'id,name,updated_at,version,deleted_at';
+const xid = (value: unknown) => {
+  if (typeof value !== 'string' || !/^\d{1,20}$/.test(value)) throw new HttpError(400, 'Cursor inválido.');
+  return value;
+};
+/** Lectura coherente. El cursor es el xmin de esta instantánea: lo que confirme después tendrá change_xid >= cursor. */
+async function readWorkspace(client: PoolClient, since: string | null) {
+  const where = since ? 'WHERE change_xid >= $1::xid8' : '';
+  const params = since ? [since] : [];
+  const cursor = (await client.query("SELECT pg_snapshot_xmin(pg_current_snapshot())::text AS cursor")).rows[0].cursor as string;
+  const settings = await client.query(`SELECT * FROM workspace_settings WHERE id=1 ${since ? 'AND change_xid >= $1::xid8' : ''}`, params);
+  const documents = await client.query(`SELECT ${DOC_META} FROM documents ${where} ORDER BY created_at,id`, params);
+  const whiteboards = await client.query(`SELECT ${BOARD_META} FROM whiteboards ${where} ORDER BY updated_at,id`, params);
+  const connections = await client.query(`SELECT * FROM hyperthreads ${where} ORDER BY created_at DESC,id`, params);
+  return { cursor, settings: settings.rows[0] ?? null, documents: documents.rows, whiteboards: whiteboards.rows, connections: connections.rows };
+}
+async function readOnly<T>(work: (client: PoolClient) => Promise<T>) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
-    const settings = await client.query('SELECT * FROM workspace_settings WHERE id=1');
-    const documents = await client.query('SELECT * FROM documents ORDER BY created_at,id');
-    const whiteboards = await client.query('SELECT * FROM whiteboards ORDER BY updated_at,id');
-    const connections = await client.query('SELECT * FROM hyperthreads ORDER BY created_at DESC,id');
+    const result = await work(client);
     await client.query('COMMIT');
-    res.json({ settings: settings.rows[0], documents: documents.rows, whiteboards: whiteboards.rows, connections: connections.rows });
-  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+    return result;
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; } finally { client.release(); }
+}
+app.get('/api/bootstrap', async (_req,res) => { res.json(await readOnly(client => readWorkspace(client, null))); });
+app.get('/api/changes', async (req,res) => {
+  const since = xid(req.query.since);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(await readOnly(client => readWorkspace(client, since)));
+});
+app.get('/api/documents/:id', async (req,res) => {
+  const result = await pool.query('SELECT * FROM documents WHERE id=$1',[uuid(req.params.id)]);
+  if (!result.rowCount) throw new HttpError(404,'No se encontró la página.');
+  res.json(result.rows[0]);
+});
+app.get('/api/whiteboards/:id', async (req,res) => {
+  const result = await pool.query('SELECT * FROM whiteboards WHERE id=$1',[text(req.params.id)]);
+  if (!result.rowCount) throw new HttpError(404,'No se encontró la pizarra.');
+  res.json(result.rows[0]);
 });
 app.post('/api/documents', async (req,res) => {
   const body = object(req.body);
@@ -66,11 +99,13 @@ for (const [route, table, kind] of [
     const fields = validatePatch(body,kind);
     const values: unknown[] = fields.map(f => f.value);
     values.push(id, body.version);
-    const result = await pool.query(`UPDATE ${table} SET ${fields.map((f,i) => `${f.column}=$${i+1}`).join(',')}, version=version+1, updated_at=now() WHERE id=$${values.length-1} AND version=$${values.length} RETURNING *`, values);
+    // La respuesta no repite el contenido recién enviado (puede pesar megas en una pizarra).
+    const returning = kind === 'document' ? DOC_META : kind === 'whiteboard' ? BOARD_META : '*';
+    const result = await pool.query(`UPDATE ${table} SET ${fields.map((f,i) => `${f.column}=$${i+1}`).join(',')}, version=version+1, updated_at=now() WHERE id=$${values.length-1} AND version=$${values.length} RETURNING ${returning}`, values);
     if (!result.rowCount) {
       const current = await pool.query(`SELECT * FROM ${table} WHERE id=$1`,[id]);
       if (!current.rowCount) throw new HttpError(404,'No se encontró el recurso.');
-      res.status(409).json({ error: 'El recurso cambió en otra pestaña. Tu borrador sigue conservado.', current: current.rows[0] }); return;
+      res.status(409).json({ error: 'El recurso cambió en otra pestaña o en otro equipo. Tu borrador sigue conservado.', current: current.rows[0] }); return;
     }
     res.json(result.rows[0]);
   });
