@@ -1,6 +1,6 @@
 ﻿# Crea los accesos directos de nontion en este equipo (Escritorio, menú Inicio e inicio automático de Windows).
 # Uso: doble clic en "Instalar NONtion.cmd" (en la raíz del proyecto). Para quitarlos: "Instalar NONtion.cmd" -Desinstalar
-param([switch]$Desinstalar, [switch]$SinInicioAutomatico)
+param([switch]$Desinstalar, [switch]$SinInicioAutomatico, [switch]$SinTablet)
 $ErrorActionPreference = 'Stop'
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -35,6 +35,29 @@ if (-not (Test-Path (Join-Path $root 'backend\.env'))) {
   Write-Warning 'Falta backend\.env con DATABASE_URL. Créalo antes de abrir nontion.'
 }
 
+# Tablet Android por USB: adb (Android platform-tools, descarga oficial de Google) en %LOCALAPPDATA%\nontion.
+if (-not $SinTablet) {
+  $tools = Join-Path $env:LOCALAPPDATA 'nontion'
+  $adb = Join-Path $tools 'platform-tools\adb.exe'
+  if ((Test-Path $adb) -or (Get-Command adb -ErrorAction SilentlyContinue)) {
+    Write-Host 'adb (tablet por USB) ya está instalado.'
+  } else {
+    Write-Host 'Descargando Android platform-tools de Google para usar la tablet por USB…'
+    $zip = Join-Path $env:TEMP 'nontion-platform-tools.zip'
+    try {
+      [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+      $ProgressPreference = 'SilentlyContinue'
+      Invoke-WebRequest 'https://dl.google.com/android/repository/platform-tools-latest-windows.zip' -OutFile $zip -UseBasicParsing
+      New-Item -ItemType Directory -Force $tools | Out-Null
+      Expand-Archive $zip -DestinationPath $tools -Force
+      Remove-Item $zip -ErrorAction SilentlyContinue
+      Write-Host "adb instalado en $adb"
+    } catch {
+      Write-Warning "No se pudo descargar adb: $($_.Exception.Message). Vuelve a ejecutar este instalador con internet para usar la tablet."
+    }
+  }
+}
+
 $icon = Join-Path $root 'scripts\nontion.ico'
 foreach ($link in $links) {
   $shortcut = $shell.CreateShortcut($link.Path)
@@ -47,5 +70,9 @@ foreach ($link in $links) {
   $shortcut.Save()
   Write-Host "Creado: $($link.Path)"
 }
+# Reinicia nontion para que use lo recién instalado (por ejemplo, adb).
+& $node (Join-Path $root 'scripts\stop.mjs') | Out-Null
+Start-Process -FilePath $node -ArgumentList "`"$(Join-Path $root 'scripts\launch.mjs')`"" -WorkingDirectory $root -WindowStyle Minimized
+
 Write-Host ''
 Write-Host 'Listo. nontion se abrirá solo al iniciar sesión en Windows; también puedes abrirlo desde el Escritorio o el menú Inicio.'

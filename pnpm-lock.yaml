@@ -44,6 +44,9 @@ importers:
       '@tiptap/react':
         specifier: 2.4.0
         version: 2.4.0(@tiptap/core@2.4.0(@tiptap/pm@2.4.0))(@tiptap/pm@2.4.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+      '@tldraw/assets':
+        specifier: 5.5.2
+        version: 5.5.2
       '@tldraw/tldraw':
         specifier: ^5.5.2
         version: 5.5.2(@floating-ui/dom@1.8.0)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
@@ -1616,6 +1619,10 @@ packages:
 
   '@tiptap/starter-kit@3.32.0':
     resolution: {integrity: sha512-aPYxaevci4PgMrTLsg+baiqI7M1ICd4V9H+zTTdrqs8OUZIbAvj/pNDuHU8uWZyKMu3Dh72t2D6ZdqRu/6aSWw==}
+
+  '@tldraw/assets@5.5.2':
+    resolution: {integrity: sha512-4VnCsH0M/XFavv4n+tHleEnvZkNTPQZceXlj4jHdaCfSr9M/R/NmPVw7v6UumXLxoSEJBt/3aEIjHAks0kJw0Q==}
+    engines: {node: '>=22.12.0'}
 
   '@tldraw/driver@5.5.2':
     resolution: {integrity: sha512-qCxHgHjE8iWfqQK8O59OPEYX5MEBUuuUTfaiKog8kqgGCXABiVeUuD38W8AdYWM/KJnaNcBBfKrPLwoK+RyLsQ==}
@@ -3916,6 +3923,10 @@ snapshots:
       '@tiptap/extension-underline': 3.32.0(@tiptap/core@3.32.0(@tiptap/pm@3.32.0))
       '@tiptap/extensions': 3.32.0(@tiptap/core@3.32.0(@tiptap/pm@3.32.0))(@tiptap/pm@3.32.0)
       '@tiptap/pm': 3.32.0
+
+  '@tldraw/assets@5.5.2':
+    dependencies:
+      '@tldraw/utils': 5.5.2
 
   '@tldraw/driver@5.5.2(@floating-ui/dom@1.8.0)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)':
     dependencies:

@@ -1,4 +1,4 @@
-import { BrowserRouter, Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom';
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { PanelLeftOpen } from 'lucide-react';
 import Sidebar from './components/layout/Sidebar';
@@ -54,11 +54,13 @@ function Shell() {
   const backgroundEffect=useAppStore(s=>s.backgroundEffect),pauseAnimations=useAppStore(s=>s.pauseAnimations);
   const sidebar=useAppStore(s=>s.isSidebarOpen),error=useAppStore(s=>s.error),customizing=useAppStore(s=>s.isCustomizing);
   const fetchInitialData=useAppStore(s=>s.fetchInitialData);
+  const location=useLocation(),boardFocus=useAppStore(s=>s.boardFocus);
+  const focus=boardFocus&&/^\/pizarra\/[^/]+/.test(location.pathname);
   const [settings,setSettings]=useState(false),[trash,setTrash]=useState(false);
   useEffect(()=>{void fetchInitialData();},[fetchInitialData]);
-  useEffect(()=>{const down=(e:KeyboardEvent)=>{if(e.key==='Escape'){useAppStore.getState().setEditingControl(null);if(!useAppStore.getState().isSearchOpen){setSettings(false);setTrash(false);}}};window.addEventListener('keydown',down);return()=>window.removeEventListener('keydown',down);},[]);
+  useEffect(()=>{const down=(e:KeyboardEvent)=>{if(e.key==='Escape'){useAppStore.getState().setEditingControl(null);if(useAppStore.getState().boardFocus&&!document.querySelector('.tl-container:focus-within'))useAppStore.getState().setBoardFocus(false);if(!useAppStore.getState().isSearchOpen){setSettings(false);setTrash(false);}}};window.addEventListener('keydown',down);return()=>window.removeEventListener('keydown',down);},[]);
   if(!loaded)return <div className="startup"><div className="glass-modal p-8 max-w-md"><h1 className="text-2xl font-semibold mb-3">Espacio de Nicolás</h1><p className="text-neutral-400" role="status">{loadError||'Conectando con tu espacio…'}</p>{loadError&&<button className="soft-button mt-5" disabled={loading} onClick={()=>{void useAppStore.getState().fetchInitialData();}}>Reintentar conexión</button>}</div></div>;
-  return <div className="app-shell" style={{backgroundColor:theme}}>
+  return <div className={`app-shell${focus?' board-focus':''}`} style={{backgroundColor:theme}}>
     {backgroundEffect === 'vignette-bloom'
       ? <VignetteBloomBackground className="ascii-workspace-background" paused={pauseAnimations} onError={message=>useAppStore.getState().setError(message)}/>
       : image&&<ImageAsset src={image} className="workspace-background" style={{filter:`blur(${blur}px) brightness(${brightness}%)`}}/>}

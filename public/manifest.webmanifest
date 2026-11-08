@@ -1,0 +1,18 @@
+{
+  "name": "Espacio de Nicolás · nontion",
+  "short_name": "nontion",
+  "description": "Tu espacio personal para escribir, dibujar y conectar ideas.",
+  "lang": "es",
+  "start_url": "/pizarra",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["fullscreen", "standalone"],
+  "orientation": "any",
+  "background_color": "#191919",
+  "theme_color": "#191919",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

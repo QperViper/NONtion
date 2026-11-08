@@ -30,6 +30,7 @@
     "@tiptap/extension-highlight": "2.4.0",
     "@tiptap/pm": "2.4.0",
     "@tiptap/react": "2.4.0",
+    "@tldraw/assets": "5.5.2",
     "@tldraw/tldraw": "^5.5.2",
     "aos": "^2.3.4",
     "clsx": "^2.1.1",

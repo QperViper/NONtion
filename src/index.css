@@ -1,6 +1,7 @@
 @import "tailwindcss";
 
 /* Forzamos a que todo ocupe el 100% de la pantalla sin cortes ni bordes */
+html, body { overscroll-behavior:none; } /* sin "tirar para recargar" al dibujar en la tablet */
 html, body, #root {
   width: 100%;
   height: 100%;
@@ -108,3 +109,14 @@ input[type="range"],input[type="checkbox"] {accent-color:#fb7185;}
 .error-toast {position:fixed;left:50%;bottom:24px;transform:translateX(-50%);display:flex;align-items:center;gap:20px;z-index:120;padding:14px 18px;background:#3a2028;border:1px solid #fb718540;border-radius:10px;box-shadow:0 10px 60px #0008;color:#fecdd3;font-size:13px;width:max-content;max-width:90vw;}
 @media(max-width:760px){.sidebar{position:absolute;z-index:55;background:rgba(24,24,28,.98);box-shadow:20px 0 80px #0008;}.panels{padding:14px;gap:12px;}.panel-slot{flex-basis:calc(100vw - 28px);}.page-heading{padding:24px 26px 12px;}.page-title{font-size:29px;}.note-editor .bn-editor{padding:0 14px;}.editor-actions{padding:0 12px 18px;}.row-delete{opacity:1;}.workspace-toolbar{padding:8px 14px;}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation:none!important;transition:none!important;}}
+
+/* Pizarra a pantalla completa (tablet): solo el lienzo y una barra mínima para salir. */
+.app-shell.board-focus .sidebar, .app-shell.board-focus .workspace-toolbar, .app-shell.board-focus .customize-banner { display:none; }
+.app-shell.board-focus .workspace-content { overflow:hidden; }
+.app-shell.board-focus .panels { padding:0; gap:0; height:100%; min-height:0; }
+.app-shell.board-focus .panel-slot:not([data-primary-panel]) { display:none; }
+.app-shell.board-focus .panel-slot[data-primary-panel] { flex:1 1 auto; max-width:none; margin:0; height:100%; }
+.app-shell.board-focus .resource-panel { height:100%; min-height:0; border:0; border-radius:0; display:flex; flex-direction:column; }
+.app-shell.board-focus .board-heading, .app-shell.board-focus .connections-footer, .app-shell.board-focus .open-full { display:none; }
+.app-shell.board-focus .panel-header { padding:4px 12px; }
+.app-shell.board-focus .whiteboard-editor { flex:1; height:auto; min-height:0; }

@@ -1,6 +1,6 @@
 import { Component, lazy, Suspense, useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
-import { ImagePlus, SmilePlus, Star, X, ArrowUpRight, Link2, RotateCcw } from 'lucide-react';
+import { ImagePlus, SmilePlus, Star, X, ArrowUpRight, Link2, RotateCcw, Maximize2, Minimize2 } from 'lucide-react';
 import { useAppStore, resourceKey } from '../store/useAppStore';
 import type { ResourceRef } from '../store/useAppStore';
 import ControlButton from './ControlButton';
@@ -22,6 +22,7 @@ export default function ResourcePanel({resource,onClose,onNavigate}:{resource:Re
   const generation=useAppStore(s=>s.generations[resourceKey(resource)] || 0);
   const status=useAppStore(s=>s.saveStates[resourceKey(resource)]);
   const loadError=useAppStore(s=>s.loadErrors[resourceKey(resource)]);
+  const boardFocus=useAppStore(s=>s.boardFocus);
   const item=resource.kind==='document'?doc:board;
   const needsContent=Boolean(item&&!item.loaded&&!item.deletedAt);
   // El contenido no viene en el arranque: se descarga al abrir la página o pizarra.
@@ -39,6 +40,12 @@ export default function ResourcePanel({resource,onClose,onNavigate}:{resource:Re
       <span role="status" className={`save-status ${status?.status==='error'||status?.status==='conflict'?'text-amber-300':''}`}>{({pending:'Pendiente',saving:'Guardando…',saved:'Guardado',error:'Sin sincronizar',conflict:'Conflicto'})[status?.status||'saved']}</span>
       <ControlButton controlId="panel.export" label="Exportar recurso JSON" className="icon-button" icon={<ArrowUpRight size={15}/>} onClick={()=>exportJson(item,`${item.title||'recurso'}.json`)}/>
       {resource.kind==='document'&&doc&&<ControlButton controlId="panel.favorite" label={doc.isFavorite?'Quitar de favoritos':'Añadir a favoritos'} className={`icon-button ${doc.isFavorite?'text-amber-300':''}`} icon={<Star size={15} fill={doc.isFavorite?'currentColor':'none'}/>} onClick={()=>useAppStore.getState().updateDocument(doc.id,{isFavorite:!doc.isFavorite})}/>}
+      {resource.kind==='whiteboard'&&!onClose&&<ControlButton controlId="panel.board-focus" label={boardFocus?'Salir de pantalla completa':'Pizarra a pantalla completa'} className="icon-button" icon={boardFocus?<Minimize2 size={15}/>:<Maximize2 size={15}/>} onClick={()=>{
+        const next=!boardFocus;useAppStore.getState().setBoardFocus(next);
+        // Pantalla completa del navegador cuando se puede (en la app instalada ya lo está).
+        if(next&&!document.fullscreenElement)document.documentElement.requestFullscreen?.().catch(()=>{});
+        if(!next&&document.fullscreenElement)document.exitFullscreen().catch(()=>{});
+      }}/>}
       {onClose&&<ControlButton controlId="panel.close" label="Cerrar panel" className="icon-button" icon={<X size={16}/>} onClick={onClose}/>}
     </header>
     {item.deletedAt?<div className="p-8"><h1 className="text-2xl font-semibold mb-3">{item.title}</h1><p className="text-neutral-400 mb-5">Este recurso está en la papelera. Sus conexiones se conservan.</p><ControlButton controlId="resource.restore" label="Restaurar recurso" className="soft-button" icon={<RotateCcw size={16}/>} onClick={()=>resource.kind==='document'?useAppStore.getState().updateDocument(item.id,{deletedAt:null}):useAppStore.getState().updateWhiteboard(item.id,{deletedAt:null})}>Restaurar</ControlButton></div>:<>

@@ -37,12 +37,36 @@ function readEnv(file) {
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+let apiStartedAt = 0;
 /** 'ok' = API y base listas, 'db' = API en marcha pero sin base de datos, null = no responde. */
 async function health() {
   try {
     const response = await fetch(`${appUrl}api/health`, { signal: AbortSignal.timeout(4000) });
-    return response.ok ? 'ok' : 'db';
+    if (!response.ok) return 'db';
+    apiStartedAt = Number((await response.json().catch(() => ({}))).startedAt) || 0;
+    return 'ok';
   } catch { return null; }
+}
+
+/** Código más nuevo que la API en marcha (por ejemplo, tras un git pull): hay que reiniciarla. */
+function codeChangedSince(time) {
+  const watched = ['src', 'public', 'index.html', 'vite.config.ts', 'package.json', 'pnpm-lock.yaml', 'backend'].map(p => path.join(root, p));
+  const newest = Math.max(...watched.map(target => target.endsWith('backend')
+    ? Math.max(...readdirSync(target).filter(n => n !== 'node_modules' && n !== 'data' && n !== 'backups').map(n => newestMtime(path.join(target, n))))
+    : newestMtime(target)));
+  return newest > time;
+}
+
+async function restartIfOutdated() {
+  if (!apiStartedAt || !codeChangedSince(apiStartedAt) || !existsSync(pidFile)) return false;
+  const pid = Number(readFileSync(pidFile, 'utf8'));
+  if (!pid || !alive(pid)) return false;
+  log('El código cambió desde que arrancó la API: reiniciando…');
+  try { process.kill(pid); } catch { return false; }
+  // Se espera a que el proceso termine de verdad (no basta con que deje de aceptar conexiones nuevas).
+  for (let i = 0; i < 40 && alive(pid); i++) await sleep(250);
+  apiStartedAt = 0;
+  return !alive(pid);
 }
 
 function alive(pid) {
@@ -69,6 +93,22 @@ function ensureBuild() {
     { cwd: root, encoding: 'utf8', windowsHide: true });
   writeFileSync(path.join(logs, 'build.log'), `${result.stdout || ''}\n${result.stderr || ''}`);
   if (result.status !== 0) throw new Error('No se pudo compilar la interfaz. El detalle está en logs/build.log.');
+}
+
+/** Tras un `git pull` con dependencias nuevas, las instala antes de compilar (una vez por cambio del lockfile). */
+function ensureDependencies() {
+  for (const dir of [root, path.join(root, 'backend')]) {
+    const lock = path.join(dir, 'pnpm-lock.yaml');
+    const marker = path.join(dir, 'node_modules', '.nontion-instalado');
+    if (!existsSync(lock)) continue;
+    const installed = Math.max(...[marker, path.join(dir, 'node_modules', '.modules.yaml')].map(f => existsSync(f) ? statSync(f).mtimeMs : 0));
+    if (installed && statSync(lock).mtimeMs <= installed) continue;
+    log(`Instalando dependencias en ${path.relative(root, dir) || 'la raíz'}…`);
+    const result = spawnSync('pnpm', ['install', '--frozen-lockfile'], { cwd: dir, encoding: 'utf8', windowsHide: true, shell: process.platform === 'win32' });
+    writeFileSync(path.join(logs, 'install.log'), `${result.stdout || ''}\n${result.stderr || ''}${result.error ? `\n${result.error.message}` : ''}`);
+    if (result.status !== 0) throw new Error(`No se pudieron instalar las dependencias (¿pnpm está instalado?). Detalle en logs/install.log. También puedes ejecutar "pnpm install" en ${dir}.`);
+    writeFileSync(marker, new Date().toISOString());
+  }
 }
 
 function startApi() {
@@ -132,8 +172,10 @@ async function main() {
     return showProblem('Falta backend/.env', 'Copia backend/.env.example a backend/.env y escribe tu DATABASE_URL.');
   }
   let state = await health();
+  if (state === 'ok' && await restartIfOutdated()) state = null;
   if (state === 'ok') { log('La API ya estaba en marcha.'); open(appUrl); return; }
   if (state === null) {
+    try { ensureDependencies(); } catch (error) { return showProblem('Faltan dependencias', error.message); }
     try { ensureBuild(); } catch (error) { return showProblem('La interfaz no compiló', error.message); }
   }
   // Al encender el equipo la base de datos o la red pueden tardar: se reintenta con paciencia.

@@ -4,6 +4,7 @@ import { pool } from './db.ts';
 import { serveUi } from './ui.ts';
 import { scheduleBackups } from './backup.ts';
 import { cloudConfig, ensureBucket } from './storage.ts';
+import { watchTablets } from './tablet.ts';
 
 // --ui: modo de uso diario. La API también entrega la app compilada en el mismo puerto.
 if (process.argv.includes('--ui') && !serveUi(app)) console.warn('No existe dist/. Ejecuta "npm run build" para servir la interfaz.');
@@ -20,8 +21,10 @@ try {
   });
   if (cloudConfig()) ensureBucket().then(() => console.log('Imágenes: Supabase Storage listo.'), error => console.error('Supabase Storage no disponible:', (error as Error).message));
   const stopBackups = scheduleBackups();
+  // Tablet Android por USB (si adb está instalado). NONTION_TABLET_ABRIR=0 evita abrir la pizarra al conectarla.
+  const tablets = watchTablets({ port, openPath: process.env.NONTION_TABLET_ABRIR === '0' ? null : '/pizarra' });
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-    process.on(signal, () => { stopBackups(); server.close(() => { void pool.end(); }); });
+    process.on(signal, () => { stopBackups(); tablets?.stop(); server.close(() => { void pool.end(); }); server.closeIdleConnections(); });
   }
 } catch (error) {
   console.error('No se pudo iniciar PostgreSQL. Revisa DATABASE_URL.', (error as {code?: string}).code);

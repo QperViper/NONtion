@@ -31,7 +31,8 @@ app.post('/api/assets', express.raw({ type: ['image/png','image/jpeg','image/web
   catch (error) { console.error('No se pudo guardar la imagen:', (error as Error).message); throw new HttpError(502, 'No se pudo guardar la imagen en la nube. Revisa tu conexión y vuelve a intentarlo.'); }
   res.status(201).json({ url: `/assets/${filename}` });
 });
-app.get('/api/health', async (_req,res) => { await pool.query('SELECT 1'); res.json({ ok: true }); });
+const startedAt = Date.now();
+app.get('/api/health', async (_req,res) => { await pool.query('SELECT 1'); res.json({ ok: true, startedAt }); });
 // Metadatos sin el contenido: el contenido de cada página o pizarra se pide al abrirla.
 // thread_links permite mostrar conexiones entrantes sin descargar la página de origen.
 const DOC_META = `id,parent_id,title,icon,cover_image,is_favorite,created_at,updated_at,version,deleted_at,

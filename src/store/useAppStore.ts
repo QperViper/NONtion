@@ -19,6 +19,8 @@ interface AppState extends Settings {
   loadErrors: Record<string,string>;
   isSearchOpen: boolean; pendingConnection: PendingConnection | null;
   isCustomizing: boolean; editingControl: string | null; pauseAnimations: boolean;
+  /** Pizarra a pantalla completa (preferencia de este equipo, pensada para la tablet). */
+  boardFocus: boolean; setBoardFocus: (value: boolean) => void;
   fetchInitialData: () => Promise<void>; refresh: () => Promise<void>;
   loadResource: (ref: ResourceRef) => Promise<void>;
   setError: (error: string | null) => void; retrySaves: () => void;
@@ -102,7 +104,7 @@ function setDevice(patch: Partial<DevicePrefs>) { writeDevicePrefs(patch); useAp
 export const useAppStore = create<AppState>((set,get) => ({
   ...defaults,isLoaded:false,loading:false,loadError:null,error:null,settingsVersion:1,
   documents:[],whiteboards:[],connections:[],loadErrors:{},currentDocId:null,saveStates:{},generations:{},orphanDrafts:[],panels:[],replaceTarget:null,
-  isSearchOpen:false,pendingConnection:null,isCustomizing:false,editingControl:null,pauseAnimations:localStorage.getItem('nontion-pause-animations') === 'true' || (localStorage.getItem('nontion-pause-animations') === null && window.matchMedia('(prefers-reduced-motion: reduce)').matches),
+  isSearchOpen:false,pendingConnection:null,isCustomizing:false,editingControl:null,boardFocus:(() => { try { return localStorage.getItem('nontion-board-focus') === 'true'; } catch { return false; } })(),pauseAnimations:localStorage.getItem('nontion-pause-animations') === 'true' || (localStorage.getItem('nontion-pause-animations') === null && window.matchMedia('(prefers-reduced-motion: reduce)').matches),
   setError:error => set({error}),
   fetchInitialData: () => {
     if (bootstrapPromise) return bootstrapPromise;
@@ -274,6 +276,7 @@ export const useAppStore = create<AppState>((set,get) => ({
     if (patch) customizations[id] = {...customizations[id],...patch}; else delete customizations[id];
     void get().syncSettings({customizations});
   },
+  setBoardFocus:boardFocus => { try { localStorage.setItem('nontion-board-focus',String(boardFocus)); } catch { /* solo comodidad */ } set({boardFocus}); },
   setPauseAnimations:pauseAnimations => { localStorage.setItem('nontion-pause-animations',String(pauseAnimations)); set({pauseAnimations}); },
 }));
 if (typeof window !== 'undefined') {

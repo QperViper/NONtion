@@ -64,6 +64,24 @@ La base de datos y las imágenes pueden vivir en Supabase para usar el mismo esp
 
 Clona el repositorio, ejecuta `pnpm install` y `pnpm --dir backend install`, crea `backend/.env` con `DATABASE_URL`, `SUPABASE_URL` y `SUPABASE_SECRET_KEY` (sin `LOCAL_DATABASE_URL`) y haz doble clic en `Instalar NONtion.cmd`. No necesita PostgreSQL instalado.
 
+## Pizarra en la tablet Android por USB
+
+La tablet usa la app del equipo al que está conectada (torre o notebook) por el cable, sin Wi-Fi: `adb reverse` hace que `http://localhost:4000` en la tablet llegue a ese equipo. Mientras nontion está abierto, el equipo vigila el cable cada 3 s; al conectar la tablet la enlaza y abre la pizarra. Al desconectarla y volver a conectarla, se enlaza de nuevo sola.
+
+**Preparación (una vez):**
+1. En la tablet: **Ajustes → Acerca de la tablet**, toca 7 veces **Número de compilación**. Luego **Ajustes → Sistema → Opciones de desarrollador** y activa **Depuración por USB**.
+2. En cada equipo, vuelve a ejecutar **`Instalar NONtion.cmd`**: descarga `adb` (Android platform-tools, de Google) en `%LOCALAPPDATA%\nontion` y reinicia nontion.
+3. Conecta la tablet con un cable **de datos**. En la tablet aparece «¿Permitir depuración por USB?»: marca **Permitir siempre desde esta computadora** y acepta.
+4. Se abre la pizarra en Chrome. Menú **⋮ → Instalar app** (o *Agregar a pantalla principal*): queda como app a pantalla completa con su ícono.
+
+**En la pizarra:** el botón ⤢ de la barra superior deja solo el lienzo (sin barra lateral) y la tablet lo recuerda; en el equipo puedes salir también con Esc. Un dedo o el lápiz dibujan con la herramienta lápiz; dos dedos mueven y hacen zoom. Con un lápiz pasivo la pantalla no distingue lápiz de dedo, así que apoyar la palma puede contar como toque: un guante de dibujo lo evita. Las fuentes e íconos de la pizarra van dentro de la app y no dependen de internet.
+
+**Si no se enlaza:** mira `logs/api.log` (indica si falta autorizar la tablet). Prueba otro cable o puerto y, en la tablet, el modo USB «Transferencia de archivos». Si Windows no reconoce la tablet, instala el controlador USB de Lenovo. `NONTION_TABLET_ABRIR=0` en `backend/.env` evita que la pizarra se abra sola al conectar.
+
+## Actualizaciones
+
+Después de un `git pull`, abre nontion como siempre: si el código cambió desde que arrancó, el lanzador reinicia la API, instala dependencias nuevas (si cambió `pnpm-lock.yaml`) y recompila la interfaz.
+
 ## Persistencia y recuperación
 
 - El backend aplica migraciones versionadas al arrancar. La primera añade columnas a las tablas existentes; no elimina notas, relaciones ni columnas.
