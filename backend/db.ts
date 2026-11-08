@@ -25,7 +25,7 @@ export function poolConfig(connectionString = process.env.DATABASE_URL): PoolCon
   const ca = caPath ? readFileSync(fileURLToPath(new URL(caPath, new URL('./', import.meta.url))), 'utf8') : undefined;
   const ssl = mode === 'off' ? false : { rejectUnauthorized: mode === 'verify' || Boolean(ca), ...(ca ? { ca } : {}) };
   return {
-    connectionString: url.toString(), ssl,
+    connectionString: url.toString(), ssl, application_name: 'nontion',
     max: remote ? 4 : 10, idleTimeoutMillis: 30_000, keepAlive: true,
     connectionTimeoutMillis: remote ? 10_000 : 5000,
   };
@@ -34,4 +34,8 @@ export function poolConfig(connectionString = process.env.DATABASE_URL): PoolCon
 export const isRemoteDatabase = Boolean(poolConfig().ssl);
 export const pool = new pg.Pool(poolConfig());
 // Un corte de red no debe tumbar la API: el pool descarta la conexión y la siguiente consulta reconecta.
-pool.on('error', error => { console.error('Conexión con la base interrumpida:', (error as { code?: string }).code ?? error.message); });
+const dropped = (error: Error) => { console.error('Conexión con la base interrumpida:', (error as { code?: string }).code ?? error.message); };
+pool.on('error', dropped); // conexiones en reposo
+// Conexiones prestadas (transacciones): sin este oyente, un corte en medio de una consulta cerraba el proceso.
+// La consulta en curso igualmente falla y su petición responde con error; el navegador reintenta.
+pool.on('connect', client => { client.on('error', dropped); });

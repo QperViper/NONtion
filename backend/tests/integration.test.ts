@@ -67,6 +67,19 @@ test('API y PostgreSQL: persistencia, versiones, hiperhilos, papelera y archivos
       assert.equal((await call('/changes?since=abc')).status,400);
       assert.equal((await call(`/whiteboards/no-existe-${randomUUID()}`)).status,404);
     });
+    await t.test('un corte de la base (como los de Supabase) no tumba la API y reconecta sola',async()=>{
+      const admin=new (await import('pg')).default.Client({connectionString:process.env.DATABASE_URL});await admin.connect();
+      try {
+        // Peticiones en curso mientras se cortan todas las conexiones de la app.
+        const inFlight=Promise.all([call('/bootstrap'),call(`/documents/${id}`),call('/changes?since=1')]);
+        await admin.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='nontion' AND pid<>pg_backend_pid()");
+        const statuses=(await inFlight).map(r=>r.status);
+        assert.ok(statuses.every(s=>s===200||s===500),`respuestas: ${statuses}`);
+        await admin.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='nontion' AND pid<>pg_backend_pid()");
+        await new Promise(r=>setTimeout(r,200));
+        const after=await call('/bootstrap');assert.equal(after.status,200,'tras el corte vuelve a funcionar');
+      } finally { await admin.end(); }
+    });
     await t.test('errores HTTP explícitos para entradas y recursos inválidos',async()=>{
       assert.equal((await call(`/documents/${id}`,'PATCH',{title:'sin versión'})).status,400);
       assert.equal((await call(`/documents/${randomUUID()}`,'PATCH',{version:1,title:'ausente'})).status,404);

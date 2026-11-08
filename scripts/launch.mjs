@@ -6,6 +6,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { isNode, readPid, stopApi, supervisorPidFile } from './api-process.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const logs = path.join(root, 'logs');
@@ -58,19 +59,12 @@ function codeChangedSince(time) {
 }
 
 async function restartIfOutdated() {
-  if (!apiStartedAt || !codeChangedSince(apiStartedAt) || !existsSync(pidFile)) return false;
-  const pid = Number(readFileSync(pidFile, 'utf8'));
-  if (!pid || !alive(pid)) return false;
+  if (!apiStartedAt || !codeChangedSince(apiStartedAt) || !isNode(readPid(supervisorPidFile))) return false;
   log('El código cambió desde que arrancó la API: reiniciando…');
-  try { process.kill(pid); } catch { return false; }
-  // Se espera a que el proceso termine de verdad (no basta con que deje de aceptar conexiones nuevas).
-  for (let i = 0; i < 40 && alive(pid); i++) await sleep(250);
+  // Se espera a que los procesos terminen de verdad (no basta con que dejen de aceptar conexiones nuevas).
+  await stopApi();
   apiStartedAt = 0;
-  return !alive(pid);
-}
-
-function alive(pid) {
-  try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; }
+  return true;
 }
 
 function newestMtime(target) {
@@ -111,14 +105,15 @@ function ensureDependencies() {
   }
 }
 
+/** Arranca el vigilante, que a su vez arranca la API y la relanza si se cae. */
 function startApi() {
   const out = openSync(path.join(logs, 'api.log'), 'a');
-  const child = spawn(process.execPath, ['--import', './backend/node_modules/tsx/dist/loader.mjs', 'backend/server.ts', '--ui'], {
+  const child = spawn(process.execPath, [path.join(root, 'scripts', 'supervise.mjs'), '--ui'], {
     cwd: root, detached: true, windowsHide: true, stdio: ['ignore', out, out],
   });
   child.unref();
   writeFileSync(pidFile, String(child.pid));
-  log(`API iniciada (pid ${child.pid}).`);
+  log(`API iniciada con vigilante (pid ${child.pid}).`);
   return child.pid;
 }
 
@@ -180,18 +175,18 @@ async function main() {
   }
   // Al encender el equipo la base de datos o la red pueden tardar: se reintenta con paciencia.
   const deadline = Date.now() + (startup ? 180_000 : 60_000);
-  // Un pid guardado solo sirve si la API ya respondía (Windows reutiliza números de proceso).
-  let pid = state === 'db' && existsSync(pidFile) ? Number(readFileSync(pidFile, 'utf8')) : 0;
+  // Si el vigilante ya está en marcha (por ejemplo, esperando a que vuelva internet), no se lanza otro.
+  let pid = isNode(readPid(supervisorPidFile)) ? readPid(supervisorPidFile) : 0;
   while (Date.now() < deadline) {
     state = await health();
     if (state === 'ok') { log('Lista en', appUrl); open(appUrl); return; }
-    if (state === null && !(pid && alive(pid))) pid = startApi();
+    if (state === null && !isNode(pid)) pid = startApi();
     await sleep(1500);
   }
-  if (state === 'db') return showProblem('La base de datos no responde', 'La API está en marcha, pero no logra conectarse a PostgreSQL. Revisa tu conexión a internet o el servicio de PostgreSQL y la DATABASE_URL de backend/.env.');
+  if (state === 'db') return showProblem('La base de datos no responde', 'La API está en marcha, pero no logra conectarse a la base de datos. Revisa la conexión a internet de este equipo y la DATABASE_URL de backend/.env. nontion sigue reintentando solo: cuando vuelva la conexión, abre de nuevo el acceso directo.');
   let last = '';
-  try { last = readFileSync(path.join(logs, 'api.log'), 'utf8').trim().split(/\r?\n/).pop() || ''; } catch { /* sin registro todavía */ }
-  showProblem('La API no arrancó', `${last ? `Último mensaje: «${last}». ` : ''}Suele deberse a la DATABASE_URL, a que la base de datos o internet no están disponibles, o a otro programa usando el puerto ${port}.`);
+  try { last = readFileSync(path.join(logs, 'api.log'), 'utf8').trim().split(/\r?\n/).filter(line => !/La API se detuvo/.test(line)).pop() || ''; } catch { /* sin registro todavía */ }
+  showProblem('La API no arrancó', `${last ? `Último mensaje: «${last}». ` : ''}Suele deberse a la DATABASE_URL, a que la base de datos o internet no están disponibles, o a otro programa usando el puerto ${port}. nontion sigue reintentando solo en segundo plano.`);
 }
 
 main().catch(error => showProblem('Error inesperado del lanzador', error.stack || error.message));
