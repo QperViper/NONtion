@@ -10,7 +10,7 @@ import { pool, poolConfig } from './db.ts';
 import { migrate } from './migrate.ts';
 import { ASSET_NAME, assetsDir, cloudConfig, ensureBucket, uploadToCloud } from './storage.ts';
 
-const TABLES = ['workspace_settings', 'documents', 'whiteboards', 'hyperthreads'] as const;
+const TABLES = ['workspace_settings', 'documents', 'whiteboards', 'hyperthreads', 'events'] as const;
 type Rows = Record<(typeof TABLES)[number], Record<string, unknown>[]>;
 
 const say = (...parts: unknown[]) => console.log(...parts);
@@ -49,12 +49,12 @@ async function copyRows(target: pg.Pool, rows: Rows, replace: boolean) {
   try {
     await client.query('BEGIN');
     const existing = await counts(client);
-    const busy = existing.documents + existing.whiteboards + existing.hyperthreads;
+    const busy = existing.documents + existing.whiteboards + existing.hyperthreads + existing.events;
     if (busy && !replace) {
       throw new Error(`La base de destino ya tiene datos (${existing.documents} páginas, ${existing.whiteboards} pizarras, ${existing.hyperthreads} conexiones). `
         + 'No se copió nada. Si quieres reemplazarlos por los de este equipo, vuelve a ejecutar con --reemplazar.');
     }
-    if (busy) await client.query('DELETE FROM hyperthreads; DELETE FROM whiteboards; DELETE FROM documents;');
+    if (busy) await client.query('DELETE FROM events; DELETE FROM hyperthreads; DELETE FROM whiteboards; DELETE FROM documents;');
     await client.query('DELETE FROM workspace_settings');
     await insert(client, 'workspace_settings', rows.workspace_settings);
     // parent_id apunta a otras páginas: se insertan sin padre y luego se enlazan.
@@ -65,6 +65,7 @@ async function copyRows(target: pg.Pool, rows: Rows, replace: boolean) {
     }
     await insert(client, 'whiteboards', rows.whiteboards);
     await insert(client, 'hyperthreads', rows.hyperthreads);
+    await insert(client, 'events', rows.events);
     const copied = await counts(client);
     for (const table of TABLES) {
       if (copied[table] !== rows[table].length) throw new Error(`Recuento distinto en ${table}: origen ${rows[table].length}, destino ${copied[table]}.`);

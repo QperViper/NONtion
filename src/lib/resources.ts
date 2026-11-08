@@ -83,3 +83,21 @@ export function readDevicePrefs(storage: Pick<Storage,'getItem'> | undefined = g
 export function writeDevicePrefs(patch: Partial<DevicePrefs>, storage: Pick<Storage,'getItem'|'setItem'> | undefined = globalThis.localStorage) {
   try { storage?.setItem(DEVICE_KEY,JSON.stringify({...readDevicePrefs(storage),...patch})); } catch { /* solo afecta a la comodidad de este equipo */ }
 }
+
+/** Calendario. Fechas como ISO con zona; en eventos de todo el día, end es exclusivo (día siguiente al último). */
+export type Priority = 'baja' | 'media' | 'alta' | 'urgente';
+export const PRIORITIES: { id: Priority; label: string }[] = [
+  { id: 'baja', label: 'Baja' }, { id: 'media', label: 'Media' }, { id: 'alta', label: 'Alta' }, { id: 'urgente', label: 'Urgente' },
+];
+export interface CalendarEvent {
+  id: string; title: string; description: string; emoji: string | null; color: string; priority: Priority;
+  allDay: boolean; startAt: string; endAt: string; completed: boolean; documentId: string | null;
+  version: number; deletedAt: string | null;
+}
+export type EventInput = Omit<CalendarEvent, 'id' | 'version' | 'deletedAt'>;
+const iso = (value: unknown) => new Date(value as string).toISOString();
+export function eventRow(e: Row): CalendarEvent {
+  return {id:String(e.id),title:String(e.title),description:String(e.description ?? ''),emoji:(e.emoji as string | null) ?? null,color:String(e.color),
+    priority:e.priority as Priority,allDay:Boolean(e.all_day),startAt:iso(e.start_at),endAt:iso(e.end_at),completed:Boolean(e.completed),
+    documentId:(e.document_id as string | null) ?? null,version:Number(e.version),deletedAt:e.deleted_at ? iso(e.deleted_at) : null};
+}

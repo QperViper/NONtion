@@ -1,6 +1,7 @@
-import { FileText, PanelLeftClose, PenTool, Trash2, Star } from 'lucide-react';
+import { CalendarDays, FileText, PanelLeftClose, PenTool, Trash2, Star } from 'lucide-react';
+import { shortWhen, upcoming } from '../../lib/calendar';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useAppStore, resourcePath } from '../../store/useAppStore';
 import ImageAsset from '../ImageAsset';
 import ActionControls from './ActionControls';
@@ -9,6 +10,10 @@ import ControlButton from '../ControlButton';
 export default function Sidebar({onOpenSettings,onOpenTrash}:{onOpenSettings:()=>void;onOpenTrash:()=>void}) {
   const documents = useAppStore(s => s.documents);
   const boards = useAppStore(s => s.whiteboards);
+  const events = useAppStore(s => s.events);
+  // Reloj para «Próximos»: se actualiza cada minuto (hoy → mañana, eventos que terminan).
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 60_000); return () => clearInterval(timer); }, []);
   const width = useAppStore(s => s.sidebarWidth);
   const open = useAppStore(s => s.isSidebarOpen);
   const avatar = useAppStore(s => s.avatarImage);
@@ -26,6 +31,12 @@ export default function Sidebar({onOpenSettings,onOpenTrash}:{onOpenSettings:()=
     </div>
     <div className="px-3 pb-4"><ActionControls zone="sidebar" onSettings={onOpenSettings} onTrash={onOpenTrash}/></div>
     <nav className="flex-1 overflow-y-auto px-3 pb-6" aria-label="Recursos">
+      <section className="mb-6">
+        <ControlButton controlId="sidebar.calendar" label="Abrir calendario" className={`nav-action w-full ${location.pathname==='/calendario'?'is-active':''}`} icon={<CalendarDays size={16}/>} onClick={()=>navigate('/calendario')}><span>Calendario</span></ControlButton>
+        {/* Próximos 7 días, sin completar: un vistazo sin abrir el calendario. */}
+        {(()=>{const soon=upcoming(events,now);
+          return soon.length>0&&<ul className="upcoming" aria-label="Próximos eventos">{soon.map(e=><li key={e.id}><button className="upcoming-item" onClick={()=>navigate('/calendario')}><span className="upcoming-dot" style={{background:e.color}} aria-hidden/>{e.emoji&&<span aria-hidden>{e.emoji}</span>}<span className="truncate flex-1">{e.title}</span><span className="upcoming-when">{shortWhen(e.startAt,e.allDay,new Date(now))}</span></button></li>)}</ul>;})()}
+      </section>
       {(['document','whiteboard'] as const).map(kind => <section key={kind} className="mb-6">
         <h2 className="nav-heading">{kind === 'document'?'PÁGINAS':'PIZARRAS'}</h2>
         {resources.filter(r=>r.kind===kind).map(r => <div key={r.id} className="resource-row group">

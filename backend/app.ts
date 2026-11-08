@@ -4,7 +4,7 @@ import cors from 'cors';
 import { randomUUID } from 'node:crypto';
 import { pool } from './db.ts';
 import type { PoolClient } from 'pg';
-import { HttpError, object, text, uuid, validatePatch } from './validation.ts';
+import { HttpError, object, text, uuid, validateEvent, validatePatch } from './validation.ts';
 import { assetsDir, cloudAssets, saveAsset } from './storage.ts';
 
 export const app = express();
@@ -51,7 +51,9 @@ async function readWorkspace(client: PoolClient, since: string | null) {
   const documents = await client.query(`SELECT ${DOC_META} FROM documents ${where} ORDER BY created_at,id`, params);
   const whiteboards = await client.query(`SELECT ${BOARD_META} FROM whiteboards ${where} ORDER BY updated_at,id`, params);
   const connections = await client.query(`SELECT * FROM hyperthreads ${where} ORDER BY created_at DESC,id`, params);
-  return { cursor, settings: settings.rows[0] ?? null, documents: documents.rows, whiteboards: whiteboards.rows, connections: connections.rows };
+  // Eventos: al arrancar solo los vigentes; en /changes también los borrados, para que desaparezcan en el otro equipo.
+  const events = await client.query(`SELECT * FROM events ${since ? where : 'WHERE deleted_at IS NULL'} ORDER BY start_at,id`, params);
+  return { cursor, settings: settings.rows[0] ?? null, documents: documents.rows, whiteboards: whiteboards.rows, connections: connections.rows, events: events.rows };
 }
 async function readOnly<T>(work: (client: PoolClient) => Promise<T>) {
   const client = await pool.connect();
@@ -90,12 +92,21 @@ app.post('/api/whiteboards', async (req,res) => {
   const result = await pool.query('INSERT INTO whiteboards(id,name) VALUES($1,$2) RETURNING *',[randomUUID(),title]);
   res.status(201).json(result.rows[0]);
 });
+// El id lo genera la app: si la petición se repite (reintento tras un corte), no se duplica el evento.
+app.post('/api/events', async (req,res) => {
+  const body = object(req.body);
+  const id = uuid(body.id);
+  const fields = validateEvent(body, { create: true });
+  const inserted = await pool.query(`INSERT INTO events(id,${fields.map(f => f.column).join(',')}) VALUES($1,${fields.map((_f,i) => `$${i+2}`).join(',')}) ON CONFLICT (id) DO NOTHING RETURNING *`, [id, ...fields.map(f => f.value)]);
+  if (inserted.rowCount) { res.status(201).json(inserted.rows[0]); return; }
+  res.json((await pool.query('SELECT * FROM events WHERE id=$1',[id])).rows[0]);
+});
 for (const [route, table, kind] of [
-  ['settings','workspace_settings','settings'], ['documents','documents','document'], ['whiteboards','whiteboards','whiteboard'],
+  ['settings','workspace_settings','settings'], ['documents','documents','document'], ['whiteboards','whiteboards','whiteboard'], ['events','events','event'],
 ] as const) {
   app.patch(`/api/${route}${kind === 'settings' ? '' : '/:id'}`, async (req,res) => {
     const routeId = (req.params as Record<string,string>).id;
-    const id = kind === 'settings' ? 1 : kind === 'document' ? uuid(routeId) : text(routeId);
+    const id = kind === 'settings' ? 1 : kind === 'document' || kind === 'event' ? uuid(routeId) : text(routeId);
     const body = object(req.body);
     const fields = validatePatch(body,kind);
     const values: unknown[] = fields.map(f => f.value);
@@ -133,6 +144,9 @@ const errors: ErrorRequestHandler = (error,_req,res,_next) => {
   if (error instanceof HttpError) { res.status(error.status).json({error:error.message}); return; }
   if (error.type === 'entity.too.large') { res.status(413).json({error:'El archivo o contenido supera el límite permitido.'}); return; }
   if (error instanceof SyntaxError) { res.status(400).json({error:'JSON inválido.'}); return; }
+  // Reglas de la base (por ejemplo, un término anterior al inicio en un cambio parcial) o página enlazada inexistente.
+  if (error.code === '23514') { res.status(400).json({error:'Los datos no cumplen las reglas (revisa las fechas).'}); return; }
+  if (error.code === '23503') { res.status(400).json({error:'La página enlazada no existe.'}); return; }
   console.error('Error de API:', error.code ?? error.message);
   res.status(500).json({error:'No se pudo completar la operación. Reintenta cuando el servidor esté disponible.'});
 };

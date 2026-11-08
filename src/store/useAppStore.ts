@@ -5,15 +5,16 @@ import type { Draft } from '../lib/drafts';
 import { SaveQueue } from '../lib/saveQueue';
 import type { SaveState } from '../lib/saveQueue';
 
-import { boardRow, connectionRow, documentRow, mergeBoard, mergeDocument, patchDocument, readDevicePrefs, serverDevicePrefs, sharedSettings, writeDevicePrefs } from '../lib/resources';
-import type { ControlStyle, DevicePrefs, Document, Hiperhilo, ResourceKind, ResourceRef, Row, Settings, Whiteboard } from '../lib/resources';
-export type { ControlStyle, Document, Hiperhilo, ResourceKind, ResourceRef, Settings, Whiteboard } from '../lib/resources';
+import { boardRow, connectionRow, documentRow, eventRow, mergeBoard, mergeDocument, patchDocument, readDevicePrefs, serverDevicePrefs, sharedSettings, writeDevicePrefs } from '../lib/resources';
+import type { CalendarEvent, ControlStyle, DevicePrefs, Document, EventInput, Hiperhilo, ResourceKind, ResourceRef, Row, Settings, Whiteboard } from '../lib/resources';
+export type { CalendarEvent, ControlStyle, Document, EventInput, Priority, Hiperhilo, ResourceKind, ResourceRef, Settings, Whiteboard } from '../lib/resources';
 interface PendingConnection { sourceDocId: string; sourceBlockId: string; text: string; apply: (url: string) => void; }
-interface Bootstrap { cursor: string; settings: Row; documents: Row[]; whiteboards: Row[]; connections: Row[]; }
+interface Bootstrap { cursor: string; settings: Row; documents: Row[]; whiteboards: Row[]; connections: Row[]; events: Row[]; }
 interface Changes extends Omit<Bootstrap,'settings'> { settings: Row | null; }
 interface AppState extends Settings {
   isLoaded: boolean; loading: boolean; loadError: string | null; error: string | null;
   settingsVersion: number; documents: Document[]; whiteboards: Whiteboard[]; connections: Hiperhilo[];
+  events: CalendarEvent[];
   currentDocId: string | null; saveStates: Record<string,SaveState>; generations: Record<string,number>;
   orphanDrafts: Draft[]; panels: ResourceRef[]; replaceTarget: ResourceRef | null;
   loadErrors: Record<string,string>;
@@ -34,6 +35,8 @@ interface AppState extends Settings {
   toggleSidebar: () => void; setAvatarImage: (url: string | null) => void; setMenuIconImage: (url: string | null) => void;
   syncSettings: (patch: Partial<Settings>) => Promise<void>;
   createDocument: () => Promise<string>; createWhiteboard: () => Promise<string>;
+  createEvent: (input: EventInput) => Promise<string>;
+  updateEvent: (id: string, patch: Partial<EventInput>) => void; deleteEvent: (id: string) => void;
   updateDocument: (id: string, patch: Partial<Pick<Document,'title'|'content'|'icon'|'coverImage'|'isFavorite'|'deletedAt'>>) => void;
   updateWhiteboard: (id: string, patch: Partial<Pick<Whiteboard,'title'|'snapshot'|'deletedAt'>>) => void;
   deleteDocument: (id: string) => void; setCurrentDoc: (id: string | null) => void;
@@ -59,7 +62,7 @@ const loading = new Map<string,Promise<void>>();
 const pendingPatch = (key: string) => queue.pending().find(d => d.key === key)?.patch || {};
 const queue = new SaveQueue(draftStorage, draft => {
   const [kind,...parts] = draft.key.split(':');
-  const endpoint = kind === 'settings' ? '/settings' : `/${kind === 'document' ? 'documents' : 'whiteboards'}/${encodeURIComponent(parts.join(':'))}`;
+  const endpoint = kind === 'settings' ? '/settings' : `/${kind === 'document' ? 'documents' : kind === 'event' ? 'events' : 'whiteboards'}/${encodeURIComponent(parts.join(':'))}`;
   return request<Row>(endpoint,{method:'PATCH',body:JSON.stringify({...draft.patch,version:draft.version})});
 },(key,state,saved) => {
   useAppStore.setState(s => ({ saveStates:{...s.saveStates,[key]:state} }));
@@ -70,12 +73,18 @@ function applyPatch(key: string, patch: Row) {
   else {
     const [kind,...ids] = key.split(':'); const id = ids.join(':');
     if (kind === 'document') useAppStore.setState(s => ({documents:s.documents.map(d => d.id === id ? patchDocument(d,patch) : d)}));
+    else if (kind === 'event') useAppStore.setState(s => ({events:s.events.map(e => e.id === id ? {...e,...patch} as CalendarEvent : e)}));
     else useAppStore.setState(s => ({whiteboards:s.whiteboards.map(d => d.id === id ? {...d,...patch} as Whiteboard : d)}));
   }
 }
 /** Inserta o combina una fila del servidor y vuelve a aplicar encima los cambios aún pendientes de este equipo. */
 function upsertRow(key: string, row: Row) {
-  if (key.startsWith('document:')) {
+  if (key.startsWith('event:')) {
+    const incoming = eventRow(row);
+    useAppStore.setState(s => s.events.some(e => e.id === incoming.id)
+      ? {events:s.events.map(e => e.id === incoming.id ? incoming : e)}
+      : {events:[...s.events,incoming]});
+  } else if (key.startsWith('document:')) {
     const incoming = documentRow(row);
     useAppStore.setState(s => s.documents.some(d => d.id === incoming.id)
       ? {documents:s.documents.map(d => d.id === incoming.id ? mergeDocument(d,incoming) : d)}
@@ -100,10 +109,17 @@ function editResource(kind: ResourceKind,id: string,patch: Row) {
   const key = resourceKey({kind,id}); applyPatch(key,patch);
   void queue.enqueue(key,resource.version,patch);
 }
+function editEvent(id: string, patch: Partial<EventInput> & {deletedAt?: string | null}) {
+  const event = useAppStore.getState().events.find(e => e.id === id);
+  // version 0 = todavía creándose: se espera a que el servidor lo confirme.
+  if (!event || event.version < 1) return;
+  const key = `event:${id}`; applyPatch(key,patch);
+  void queue.enqueue(key,event.version,patch);
+}
 function setDevice(patch: Partial<DevicePrefs>) { writeDevicePrefs(patch); useAppStore.setState(patch); }
 export const useAppStore = create<AppState>((set,get) => ({
   ...defaults,isLoaded:false,loading:false,loadError:null,error:null,settingsVersion:1,
-  documents:[],whiteboards:[],connections:[],loadErrors:{},currentDocId:null,saveStates:{},generations:{},orphanDrafts:[],panels:[],replaceTarget:null,
+  documents:[],whiteboards:[],connections:[],events:[],loadErrors:{},currentDocId:null,saveStates:{},generations:{},orphanDrafts:[],panels:[],replaceTarget:null,
   isSearchOpen:false,pendingConnection:null,isCustomizing:false,editingControl:null,boardFocus:(() => { try { return localStorage.getItem('nontion-board-focus') === 'true'; } catch { return false; } })(),pauseAnimations:localStorage.getItem('nontion-pause-animations') === 'true' || (localStorage.getItem('nontion-pause-animations') === null && window.matchMedia('(prefers-reduced-motion: reduce)').matches),
   setError:error => set({error}),
   fetchInitialData: () => {
@@ -114,12 +130,12 @@ export const useAppStore = create<AppState>((set,get) => ({
       try {
         const data = await request<Bootstrap>('/bootstrap');
         cursor = data.cursor;
-        set({...sharedSettings(data.settings),...serverDevicePrefs(data.settings),...readDevicePrefs(),settingsVersion:Number(data.settings.version),documents:data.documents.map(documentRow),whiteboards:data.whiteboards.map(boardRow),connections:data.connections.map(connectionRow)});
+        set({...sharedSettings(data.settings),...serverDevicePrefs(data.settings),...readDevicePrefs(),settingsVersion:Number(data.settings.version),documents:data.documents.map(documentRow),whiteboards:data.whiteboards.map(boardRow),connections:data.connections.map(connectionRow),events:(data.events || []).map(eventRow)});
         const drafts = await draftStorage.all().catch(() => { set({error:'El navegador no permite respaldar borradores. Mantén la pestaña abierta si hay cambios pendientes.'}); return []; });
         const orphanDrafts=drafts.filter(d => !d.key.startsWith(namespace));
         for (const draft of drafts.filter(d => d.key.startsWith(namespace))) {
           const key = draft.key.slice(namespace.length);
-          const remote = key === 'settings:1' ? data.settings : (key.startsWith('document:') ? data.documents : data.whiteboards).find(r => `${key.split(':')[0]}:${r.id}` === key);
+          const remote = key === 'settings:1' ? data.settings : (key.startsWith('document:') ? data.documents : key.startsWith('event:') ? data.events || [] : data.whiteboards).find(r => `${key.split(':')[0]}:${r.id}` === key);
           if (remote) { queue.recover({...draft,key},Number(remote.version),remote); applyPatch(key,draft.patch); }
           else orphanDrafts.push(draft);
         }
@@ -153,13 +169,19 @@ export const useAppStore = create<AppState>((set,get) => ({
         };
         const documents = merge('document',get().documents,data.documents,documentRow,mergeDocument);
         const whiteboards = merge('whiteboard',get().whiteboards,data.whiteboards,boardRow,mergeBoard);
+        const events = [...get().events];
+        for (const row of data.events || []) {
+          const incoming = eventRow(row), index = events.findIndex(e => e.id === incoming.id);
+          if (queue.has(`event:${incoming.id}`)) continue;
+          if (index < 0) events.push(incoming); else events[index] = incoming;
+        }
         const connections = [...get().connections];
         for (const row of data.connections.map(connectionRow)) {
           const index = connections.findIndex(c => c.id === row.id);
           if (index < 0) connections.unshift(row); else connections[index] = row;
         }
         const settings = data.settings && !queue.has('settings:1') ? {...sharedSettings(data.settings),settingsVersion:Number(data.settings.version)} : {};
-        set({documents,whiteboards,connections,generations,...settings});
+        set({documents,whiteboards,connections,events,generations,...settings});
         cursor = data.cursor;
         for (const ref of reload) {
           try {
@@ -198,7 +220,7 @@ export const useAppStore = create<AppState>((set,get) => ({
       if (keepLocal) applySaved(key,remote);
       await queue.resolve(key,remote,keepLocal);
       // "Usar servidor": si solo había metadatos del servidor, se descarga su contenido completo.
-      if (!keepLocal && key !== 'settings:1') {
+      if (!keepLocal && (key.startsWith('document:') || key.startsWith('whiteboard:'))) {
         const [kind,...ids] = key.split(':');
         await get().loadResource({kind:kind as ResourceKind,id:ids.join(':')});
       }
@@ -209,7 +231,7 @@ export const useAppStore = create<AppState>((set,get) => ({
     const key = draft.key.slice(draft.key.indexOf('|')+1);
     if (queue.has(key)) { set({error:'Resuelve primero el borrador actual de este recurso.'}); return; }
     const data=await request<Bootstrap>('/bootstrap');
-    const resource = key === 'settings:1' ? data.settings : [...data.documents,...data.whiteboards].find(d => key.endsWith(`:${d.id}`));
+    const resource = key === 'settings:1' ? data.settings : [...data.documents,...data.whiteboards,...(data.events || [])].find(d => key.endsWith(`:${d.id}`));
     if (!resource) { set({error:'Este borrador pertenece a un recurso que ya no está disponible.'}); return; }
     applySaved(key,resource);
     queue.recover({...draft,key},Number(resource.version),resource);
@@ -242,6 +264,21 @@ export const useAppStore = create<AppState>((set,get) => ({
     try { const board = boardRow(await request<Row>('/whiteboards',{method:'POST',body:'{}'})); set(s => ({whiteboards:[...s.whiteboards,board]})); return board.id; }
     catch(e) { set({error:(e as Error).message}); return ''; }
   },
+  createEvent:async input => {
+    // Aparece al instante; el id lo pone la app, así un reintento no duplica el evento.
+    const id = crypto.randomUUID();
+    set(s => ({events:[...s.events,{...input,id,version:0,deletedAt:null}]}));
+    try {
+      const saved = eventRow(await request<Row>('/events',{method:'POST',body:JSON.stringify({id,...input})}));
+      set(s => ({events:s.events.map(e => e.id === id ? saved : e)}));
+      return id;
+    } catch(e) {
+      set(s => ({events:s.events.filter(ev => ev.id !== id),error:`No se pudo crear el evento: ${(e as Error).message}`}));
+      return '';
+    }
+  },
+  updateEvent:(id,patch) => editEvent(id,patch),
+  deleteEvent:id => editEvent(id,{deletedAt:new Date().toISOString()} as Partial<EventInput>),
   updateDocument:(id,patch) => editResource('document',id,patch),
   updateWhiteboard:(id,patch) => editResource('whiteboard',id,patch),
   deleteDocument:id => editResource('document',id,{deletedAt:new Date().toISOString()}),
