@@ -1,10 +1,14 @@
 {
-  "name": "mi-portafolio",
+  "name": "nontion",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev.mjs",
+    "start": "node scripts/launch.mjs",
+    "stop": "node scripts/stop.mjs",
+    "serve": "node --import ./backend/node_modules/tsx/dist/loader.mjs backend/server.ts --ui",
+    "backup": "node --import ./backend/node_modules/tsx/dist/loader.mjs backend/backup.ts",
     "dev:ui": "vite",
     "dev:api": "node --import ./backend/node_modules/tsx/dist/loader.mjs backend/server.ts",
     "typecheck": "tsc -b && node backend/node_modules/typescript/bin/tsc -p backend/tsconfig.json --noEmit",

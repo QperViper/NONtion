@@ -2,7 +2,7 @@
 
 Espacio personal local para escribir con BlockNote, dibujar con Tldraw y conectar texto con páginas o pizarras. React + Vite + Tailwind, Zustand como entrada de la interfaz a la API, Express y PostgreSQL.
 
-## Arranque local
+## Arranque local (desarrollo)
 
 Requisitos: Node.js compatible con Vite 8, pnpm y PostgreSQL en ejecución.
 
@@ -20,6 +20,29 @@ npm run dev
 Este comando inicia ambos procesos: frontend en `http://127.0.0.1:5173` y API en `http://127.0.0.1:4000`. Ctrl+C detiene los procesos que inició. No arranques una segunda API sobre el mismo puerto. También puedes iniciarlos por separado con `npm run dev:api` y `npm run dev:ui`.
 
 Vite envía `/api` y `/assets` al backend mediante proxy. `VITE_API_URL` permite configurar otra dirección de API. Los servicios escuchan únicamente en loopback; esta entrega está pensada para uso personal en el equipo.
+
+## Uso diario: abrir con un clic
+
+Una sola vez por equipo, haz doble clic en **`Instalar NONtion.cmd`** (raíz del proyecto). Crea:
+
+- **NONtion** en el Escritorio y en el menú Inicio: abre la app en una ventana propia (Brave → Chrome → Edge, en ese orden).
+- **Inicio automático**: al iniciar sesión en Windows, nontion arranca solo y queda abierto.
+- **Detener NONtion** en el menú Inicio.
+
+El lanzador (`scripts/launch.mjs`) arranca la API en segundo plano en `http://127.0.0.1:4000`, que también sirve la interfaz compilada (un solo puerto, sin Vite). Si el código cambió desde la última vez, recompila la interfaz antes de abrir. Si la API ya está en marcha, solo abre la ventana. Al encender el equipo espera hasta 3 minutos a que la base de datos y la red estén disponibles; si aun así no puede, muestra una página con el motivo. Los registros quedan en `logs/` (api.log, lanzador.log, build.log).
+
+- `Abrir NONtion.cmd`: abre la app sin instalar accesos directos.
+- `"Instalar NONtion.cmd" -SinInicioAutomatico`: solo crea los accesos del Escritorio y del menú Inicio. `-Desinstalar` los quita.
+- Para usar otro navegador, añade `NONTION_BROWSER=C:\ruta\al\navegador.exe` a `backend/.env`.
+- Equivalentes por terminal: `npm start`, `npm run stop`, `npm run serve` (API + interfaz en primer plano).
+
+Para programar sigue usando `npm run dev` (recarga en caliente en `http://127.0.0.1:5173`). Si nontion ya está abierto, `dev` reutiliza esa API; para que tome cambios del backend, detenla antes con `npm run stop`.
+
+Las páginas de la versión de desarrollo (puerto 5173) y las del lanzador (puerto 4000) guardan sus borradores locales por separado. Los datos guardados en la base son los mismos.
+
+## Respaldos automáticos
+
+Mientras la API está en marcha, crea un respaldo al día en `backend/backups/daily/` y conserva los 14 más recientes. Cada respaldo incluye `database.json` (todas las tablas), las imágenes y, si PostgreSQL está instalado en el equipo, `database.dump` (restaurable con `pg_restore`). Cada carpeta trae un `LEEME.txt` con las instrucciones de restauración. Respaldo manual: `npm run backup`.
 
 ## Persistencia y recuperación
 
