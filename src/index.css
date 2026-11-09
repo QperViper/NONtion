@@ -246,3 +246,28 @@ input[type="range"],input[type="checkbox"] {accent-color:#fb7185;}
 @media (max-width:700px) { .internet-page { padding:14px 12px; } .net-summary { flex-direction:column; } .net-summary img { width:100%; height:160px; } }
 .net-shield { display:inline-flex; align-items:center; gap:6px; font-size:12px; color:#7fb89a; }
 .net-web { align-self:flex-start; max-width:100%; }
+
+/* ── Cámara del celular ─────────────────────────────────────── */
+.camera-page { max-width:920px; width:100%; margin:0 auto; padding:24px 28px 40px; display:flex; flex-direction:column; gap:16px; }
+.cam-pair { flex-direction:row; gap:22px; align-items:flex-start; }
+.cam-qr { flex-shrink:0; width:220px; background:#fff; border-radius:12px; padding:8px; line-height:0; }
+.cam-qr svg { width:100%; height:auto; }
+.cam-steps { display:flex; flex-direction:column; gap:10px; min-width:0; }
+.cam-steps h2 { font-size:17px; font-weight:650; color:#fff; }
+.cam-steps ol { margin:0; padding-left:20px; display:flex; flex-direction:column; gap:6px; font-size:13.5px; }
+.cam-nets { display:flex; flex-wrap:wrap; gap:6px; }
+.net-chip.is-selected { background:#2383e233; border-color:#2383e2aa; color:#fff; }
+.cam-url { font-size:12px; color:#71717f; font-family:ui-monospace,monospace; word-break:break-all; }
+.cam-off { flex-direction:row; align-items:center; gap:14px; color:#a9a9b3; }
+.cam-received { display:flex; flex-direction:column; gap:10px; }
+.cam-received-head { display:flex; justify-content:space-between; align-items:center; }
+.cam-received code { font-size:12px; color:#a9a9b3; }
+.cam-grid { list-style:none; margin:0; padding:0; display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:10px; }
+.cam-grid li { display:flex; flex-direction:column; gap:4px; }
+.cam-thumb { position:relative; display:block; aspect-ratio:1; border-radius:10px; overflow:hidden; background:#ffffff0d; border:1px solid var(--stroke); }
+.cam-thumb img, .cam-thumb video { width:100%; height:100%; object-fit:cover; display:block; }
+.cam-thumb:hover { border-color:#ffffff40; }
+.cam-icon { height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; font-size:11px; color:#8b8b96; }
+.cam-badge { position:absolute; right:6px; bottom:6px; background:#000a; color:#fff; border-radius:6px; padding:3px 5px; line-height:0; }
+.cam-meta { font-size:11px; color:#71717f; }
+@media (max-width:700px) { .camera-page { padding:14px 12px; } .cam-pair { flex-direction:column; align-items:center; } }

@@ -3,7 +3,7 @@
 //   node scripts/launch.mjs --startup  igual, con más paciencia (al encender el equipo la red tarda)
 //   node scripts/launch.mjs --no-open  solo deja la API en marcha
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isNode, readPid, stopApi, supervisorPidFile } from './api-process.mjs';
@@ -135,13 +135,33 @@ function findBrowser() {
   return null;
 }
 
+function openDefault(url, options) {
+  const child = process.platform === 'win32'
+    ? spawn('cmd', ['/c', 'start', '""', url], { ...options, windowsHide: true })
+    : spawn(process.platform === 'darwin' ? 'open' : 'xdg-open', [url], options);
+  child.on('error', error => log('Tampoco se pudo abrir el navegador predeterminado:', error.message));
+  child.unref();
+}
+
+/** Abre la ventana y deja constancia en lanzador.log; si el navegador falla, usa el predeterminado. */
 function open(url) {
   if (args.has('--no-open')) return;
   const browser = findBrowser();
   const options = { detached: true, stdio: 'ignore', windowsHide: false };
-  if (browser) spawn(browser, [`--app=${url}`], options).unref();
-  else if (process.platform === 'win32') spawn('cmd', ['/c', 'start', '""', url], { ...options, windowsHide: true }).unref();
-  else spawn(process.platform === 'darwin' ? 'open' : 'xdg-open', [url], options).unref();
+  if (!browser) { log('Abriendo en el navegador predeterminado:', url); openDefault(url, options); return; }
+  log(`Abriendo ventana: ${browser} --app=${url}`);
+  const child = spawn(browser, [`--app=${url}`], options);
+  let fellBack = false;
+  const fallback = reason => {
+    if (fellBack) return; fellBack = true;
+    log(`El navegador no abrió la ventana (${reason}). Se usa el navegador predeterminado.`);
+    openDefault(url, options);
+  };
+  child.on('error', error => fallback(error.message));
+  // Si ya hay un Brave abierto, este proceso le pasa la orden y termina con código 0: es lo normal.
+  child.on('exit', code => { if (code) fallback(`código ${code}`); });
+  // Se espera unos segundos a ver si falla antes de que el lanzador termine.
+  setTimeout(() => child.unref(), 4000);
 }
 
 /** Si algo falla, se muestra una página con el motivo en vez de una ventana negra que desaparece. */
@@ -158,8 +178,18 @@ main{max-width:640px}h1{font-size:22px}code{background:#2a2a2a;padding:2px 6px;b
   process.exitCode = 1;
 }
 
+/** Archivos que quedaron de versiones anteriores y ya no se usan: se borran solos. */
+const OBSOLETE = ['backend/sideBrowser.ts', 'backend/tests/sideBrowser.test.ts'];
+function removeObsolete() {
+  for (const file of OBSOLETE) {
+    const full = path.join(root, file);
+    if (existsSync(full)) { try { rmSync(full); log(`Archivo obsoleto borrado: ${file}`); } catch (error) { log(`No se pudo borrar ${file}: ${error.message}`); } }
+  }
+}
+
 async function main() {
   log(`Lanzador ${startup ? '(inicio de Windows)' : ''}`.trim());
+  removeObsolete();
   if (!existsSync(path.join(root, 'node_modules')) || !existsSync(path.join(root, 'backend', 'node_modules'))) {
     return showProblem('Faltan las dependencias', 'Abre una terminal en la carpeta del proyecto y ejecuta: pnpm install  y luego  pnpm --dir backend install');
   }

@@ -7,6 +7,9 @@ import type { PoolClient } from 'pg';
 import { HttpError, object, text, uuid, validateEvent, validatePatch } from './validation.ts';
 import { assetsDir, cloudAssets, saveAsset } from './storage.ts';
 import { quickSearch } from './internet.ts';
+import { captureDir, captureStatus, resolveCapture, startCapture, stopCapture } from './capture.ts';
+import { spawn } from 'node:child_process';
+import { mkdirSync } from 'node:fs';
 
 export const app = express();
 app.disable('x-powered-by');
@@ -95,6 +98,26 @@ app.post('/api/whiteboards', async (req,res) => {
 });
 // Panel «Internet»: respuestas rápidas (las páginas completas se abren en una pestaña de tu navegador).
 app.get('/api/internet/search', async (req,res) => { res.json(await quickSearch(req.query.q)); });
+// Cámara del celular → carpeta FONion. Estas rutas son de la API local (127.0.0.1); el celular usa otro servidor.
+app.get('/api/capture', async (_req,res) => { res.setHeader('Cache-Control','no-store'); res.json(await captureStatus()); });
+app.post('/api/capture/start', async (_req,res) => {
+  try { await startCapture(); } catch (error) {
+    const code = (error as { code?: string }).code;
+    throw new HttpError(code === 'EADDRINUSE' ? 409 : 500, code === 'EADDRINUSE' ? 'El puerto de la cámara está ocupado por otro programa.' : 'No se pudo activar la recepción.');
+  }
+  res.json(await captureStatus());
+});
+app.post('/api/capture/stop', async (_req,res) => { await stopCapture(); res.json(await captureStatus()); });
+app.get('/api/capture/file', (req,res) => {
+  const full = resolveCapture(req.query.path);
+  if (!full) throw new HttpError(404,'No se encontró el archivo.');
+  res.sendFile(full, { headers: { 'X-Content-Type-Options': 'nosniff' } });
+});
+app.post('/api/capture/open-folder', (_req,res) => {
+  mkdirSync(captureDir(), { recursive: true });
+  if (process.platform === 'win32') spawn('explorer', [captureDir()], { detached: true, stdio: 'ignore' }).unref();
+  res.json({ dir: captureDir() });
+});
 // El id lo genera la app: si la petición se repite (reintento tras un corte), no se duplica el evento.
 app.post('/api/events', async (req,res) => {
   const body = object(req.body);

@@ -1,4 +1,4 @@
-import { CalendarDays, FileText, Globe, PanelLeftClose, PenTool, Trash2, Star } from 'lucide-react';
+import { CalendarDays, Camera, FileText, Globe, PanelLeftClose, PenTool, Trash2, Star } from 'lucide-react';
 import { shortWhen, upcoming } from '../../lib/calendar';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
@@ -34,6 +34,7 @@ export default function Sidebar({onOpenSettings,onOpenTrash}:{onOpenSettings:()=
       <section className="mb-6">
         <ControlButton controlId="sidebar.calendar" label="Abrir calendario" className={`nav-action w-full ${location.pathname==='/calendario'?'is-active':''}`} icon={<CalendarDays size={16}/>} onClick={()=>navigate('/calendario')}><span>Calendario</span></ControlButton>
         <ControlButton controlId="sidebar.internet" label="Abrir Internet" className={`nav-action w-full ${location.pathname==='/internet'?'is-active':''}`} icon={<Globe size={16}/>} onClick={()=>navigate('/internet')}><span>Internet</span></ControlButton>
+        <ControlButton controlId="sidebar.camera" label="Abrir cámara del celular" className={`nav-action w-full ${location.pathname==='/camara'?'is-active':''}`} icon={<Camera size={16}/>} onClick={()=>navigate('/camara')}><span>Cámara</span></ControlButton>
         {/* Próximos 7 días, sin completar: un vistazo sin abrir el calendario. */}
         {(()=>{const soon=upcoming(events,now);
           return soon.length>0&&<ul className="upcoming" aria-label="Próximos eventos">{soon.map(e=><li key={e.id}><button className="upcoming-item" onClick={()=>navigate('/calendario')}><span className="upcoming-dot" style={{background:e.color}} aria-hidden/>{e.emoji&&<span aria-hidden>{e.emoji}</span>}<span className="truncate flex-1">{e.title}</span><span className="upcoming-when">{shortWhen(e.startAt,e.allDay,new Date(now))}</span></button></li>)}</ul>;})()}
