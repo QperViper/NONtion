@@ -16,6 +16,7 @@ import ImageAsset from './components/ImageAsset';
 import VignetteBloomBackground from './components/VignetteBloomBackground';
 // El calendario (FullCalendar) se descarga solo al abrirlo.
 const CalendarPage=lazy(()=>import('./pages/Calendar'));
+const InternetPage=lazy(()=>import('./pages/Internet'));
 
 function Home({boardsOnly=false}:{boardsOnly?:boolean}) {
   const documents=useAppStore(s=>s.documents),boards=useAppStore(s=>s.whiteboards);
@@ -73,7 +74,7 @@ function Shell() {
         <div className="ml-auto flex gap-2 items-center"><span className="text-xs text-neutral-500 hidden sm:inline">Personal, conectado.</span><button className="quiet-button text-xs" onClick={()=>useAppStore.getState().setCustomizing(!customizing)}>{customizing?'Terminar personalización':'Personalizar'}</button></div>
       </div>
       {customizing&&<div className="customize-banner"><span>Modo Personalizar: pulsa un control para editarlo. Los ocultos vuelven a mostrarse.</span><button className="underline shrink-0" onClick={()=>useAppStore.getState().setCustomizing(false)}>Terminar</button></div>}
-      <main className="workspace-content"><Routes><Route path="/" element={<Home/>}/><Route path="/pizarra" element={<Home boardsOnly/>}/><Route path="/pizarra/:boardId" element={<Panels kind="whiteboard"/>}/><Route path="/hilo/:threadId" element={<ThreadRoute/>}/><Route path="/calendario" element={<Suspense fallback={<div className="p-8 text-neutral-400">Abriendo calendario…</div>}><CalendarPage/></Suspense>}/><Route path="/:documentId" element={<Panels kind="document"/>}/><Route path="*" element={<div className="p-10">Esta dirección no existe.</div>}/></Routes></main>
+      <main className="workspace-content"><Routes><Route path="/" element={<Home/>}/><Route path="/pizarra" element={<Home boardsOnly/>}/><Route path="/pizarra/:boardId" element={<Panels kind="whiteboard"/>}/><Route path="/hilo/:threadId" element={<ThreadRoute/>}/><Route path="/internet" element={<Suspense fallback={<div className="p-8 text-neutral-400">Abriendo…</div>}><InternetPage/></Suspense>}/><Route path="/calendario" element={<Suspense fallback={<div className="p-8 text-neutral-400">Abriendo calendario…</div>}><CalendarPage/></Suspense>}/><Route path="/:documentId" element={<Panels kind="document"/>}/><Route path="*" element={<div className="p-10">Esta dirección no existe.</div>}/></Routes></main>
     </div></div>
     {settings&&<SettingsPanel onClose={()=>setSettings(false)}/>}{trash&&<TrashPanel onClose={()=>setTrash(false)}/>}
     <SearchModal/><SaveInspector/>

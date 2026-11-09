@@ -6,6 +6,7 @@ import { pool } from './db.ts';
 import type { PoolClient } from 'pg';
 import { HttpError, object, text, uuid, validateEvent, validatePatch } from './validation.ts';
 import { assetsDir, cloudAssets, saveAsset } from './storage.ts';
+import { quickSearch } from './internet.ts';
 
 export const app = express();
 app.disable('x-powered-by');
@@ -92,6 +93,8 @@ app.post('/api/whiteboards', async (req,res) => {
   const result = await pool.query('INSERT INTO whiteboards(id,name) VALUES($1,$2) RETURNING *',[randomUUID(),title]);
   res.status(201).json(result.rows[0]);
 });
+// Panel «Internet»: respuestas rápidas (las páginas completas se abren en una pestaña de tu navegador).
+app.get('/api/internet/search', async (req,res) => { res.json(await quickSearch(req.query.q)); });
 // El id lo genera la app: si la petición se repite (reintento tras un corte), no se duplica el evento.
 app.post('/api/events', async (req,res) => {
   const body = object(req.body);

@@ -16,7 +16,9 @@ test('enlaza la tablet al conectarla, pide autorizarla y la vuelve a enlazar tra
   const state = path.join(dir, 'devices.txt'), calls = path.join(dir, 'calls.txt');
   const fake = path.join(dir, 'adb');
   // Imitación de adb: "devices" lee el estado de un archivo; el resto de órdenes se anotan.
-  await writeFile(fake, `#!/bin/sh\nif [ "$1" = "devices" ]; then printf 'List of devices attached\\n'; cat "${state}" 2>/dev/null; else echo "$@" >> "${calls}"; fi\n`);
+  const noBrave = path.join(dir, 'sin-brave');
+  // Si existe el archivo «sin-brave», pedir Brave responde como Android cuando la app no está instalada.
+  await writeFile(fake, `#!/bin/sh\nif [ "$1" = "devices" ]; then printf 'List of devices attached\\n'; cat "${state}" 2>/dev/null; else echo "$@" >> "${calls}"; case "$*" in *com.brave.browser*) [ -f "${noBrave}" ] && echo 'Error: Activity not started, unable to resolve Intent';; esac; fi\n`);
   await chmod(fake, 0o755);
   const messages: string[] = [];
   const watcher = watchTablets({ port: 4000, adbPath: fake, intervalMs: 60_000, log: (...parts) => messages.push(parts.join(' ')) })!;
@@ -33,8 +35,8 @@ test('enlaza la tablet al conectarla, pide autorizarla y la vuelve a enlazar tra
     assert.deepEqual(watcher.linked(), ['TABM11']);
     assert.deepEqual(await commands(), [
       '-s TABM11 reverse tcp:4000 tcp:4000',
-      '-s TABM11 shell am start -a android.intent.action.VIEW -d http://localhost:4000/pizarra',
-    ], 'enlaza y abre la pizarra una sola vez');
+      '-s TABM11 shell am start -a android.intent.action.VIEW -d http://localhost:4000/pizarra -p com.brave.browser',
+    ], 'enlaza y abre la pizarra en Brave una sola vez');
     await writeFile(state, '');
     await watcher.check();
     assert.deepEqual(watcher.linked(), []);
@@ -42,6 +44,11 @@ test('enlaza la tablet al conectarla, pide autorizarla y la vuelve a enlazar tra
     await writeFile(state, 'TABM11\tdevice\n');
     await watcher.check();
     assert.equal((await commands()).filter(c => c.includes('reverse')).length, 2, 'al reconectar se vuelve a enlazar');
+    // Tablet sin Brave: se usa el navegador predeterminado.
+    await writeFile(noBrave, '');
+    await writeFile(state, ''); await watcher.check();
+    await writeFile(state, 'TABM11\tdevice\n'); await watcher.check();
+    assert.equal((await commands()).at(-1), '-s TABM11 shell am start -a android.intent.action.VIEW -d http://localhost:4000/pizarra', 'sin Brave, abre el predeterminado');
   } finally { watcher.stop(); await rm(dir, { recursive: true, force: true }); }
 });
 

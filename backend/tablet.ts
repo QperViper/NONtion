@@ -65,9 +65,13 @@ export function watchTablets({ port, adbPath = findAdb(), intervalMs = 3000, ope
         linked.add(serial); warned.delete(serial); warned.delete(`reverse:${serial}`);
         log(`Tablet enlazada por USB (${serial}): en la tablet, abre http://localhost:${port}`);
         if (openPath) {
-          // Abre la pizarra en la tablet (o la app instalada, si captura esa dirección).
-          await adb(adbPath, ['-s', serial, 'shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', `http://localhost:${port}${openPath}`])
-            .catch(error => log('No se pudo abrir el navegador de la tablet:', (error as Error).message));
+          // Abre la pizarra en Brave si está instalado (Shields bloquea anuncios en los enlaces);
+          // si no, en el navegador predeterminado. «am start» informa el error por texto, no por código de salida.
+          const view = ['-s', serial, 'shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', `http://localhost:${port}${openPath}`];
+          try {
+            const inBrave = await adb(adbPath, [...view, '-p', 'com.brave.browser']);
+            if (/Error|unable to resolve/i.test(inBrave)) await adb(adbPath, view);
+          } catch (error) { log('No se pudo abrir el navegador de la tablet:', (error as Error).message); }
         }
       }
       warned.delete('*');
