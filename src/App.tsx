@@ -56,7 +56,7 @@ function Shell() {
   const loaded=useAppStore(s=>s.isLoaded),loading=useAppStore(s=>s.loading),loadError=useAppStore(s=>s.loadError);
   const theme=useAppStore(s=>s.themeColor),image=useAppStore(s=>s.bgImage),blur=useAppStore(s=>s.bgBlur),brightness=useAppStore(s=>s.bgBloom);
   const backgroundEffect=useAppStore(s=>s.backgroundEffect),pauseAnimations=useAppStore(s=>s.pauseAnimations);
-  const sidebar=useAppStore(s=>s.isSidebarOpen),error=useAppStore(s=>s.error),customizing=useAppStore(s=>s.isCustomizing);
+  const sidebar=useAppStore(s=>s.isSidebarOpen),error=useAppStore(s=>s.error),customizing=useAppStore(s=>s.isCustomizing),offline=useAppStore(s=>s.offline);
   const fetchInitialData=useAppStore(s=>s.fetchInitialData);
   const location=useLocation(),boardFocus=useAppStore(s=>s.boardFocus);
   const focus=boardFocus&&/^\/pizarra\/[^/]+/.test(location.pathname);
@@ -72,8 +72,9 @@ function Shell() {
       <div className="workspace-toolbar">
         {!sidebar&&<button className="icon-button" aria-label="Abrir barra lateral" onClick={()=>useAppStore.getState().toggleSidebar()}><PanelLeftOpen size={19}/></button>}
         <ActionControls zone="toolbar" onSettings={()=>setSettings(true)} onTrash={()=>setTrash(true)}/>
-        <div className="ml-auto flex gap-2 items-center"><span className="text-xs text-neutral-500 hidden sm:inline">Personal, conectado.</span><button className="quiet-button text-xs" onClick={()=>useAppStore.getState().setCustomizing(!customizing)}>{customizing?'Terminar personalización':'Personalizar'}</button></div>
+        <div className="ml-auto flex gap-2 items-center"><span className="text-xs text-neutral-500 hidden sm:inline">{offline?'Personal, sin conexión.':'Personal, conectado.'}</span><button className="quiet-button text-xs" onClick={()=>useAppStore.getState().setCustomizing(!customizing)}>{customizing?'Terminar personalización':'Personalizar'}</button></div>
       </div>
+      {offline&&<div className="offline-banner" role="status"><span>Sin conexión con Supabase · mostrando tu copia local. Lo que escribas queda guardado en este equipo y se envía solo al volver la conexión.</span><button className="underline shrink-0" onClick={()=>{void useAppStore.getState().refresh();useAppStore.getState().retrySaves();}}>Reintentar</button></div>}
       {customizing&&<div className="customize-banner"><span>Modo Personalizar: pulsa un control para editarlo. Los ocultos vuelven a mostrarse.</span><button className="underline shrink-0" onClick={()=>useAppStore.getState().setCustomizing(false)}>Terminar</button></div>}
       <main className="workspace-content"><Routes><Route path="/" element={<Home/>}/><Route path="/pizarra" element={<Home boardsOnly/>}/><Route path="/pizarra/:boardId" element={<Panels kind="whiteboard"/>}/><Route path="/hilo/:threadId" element={<ThreadRoute/>}/><Route path="/camara" element={<Suspense fallback={<div className="p-8 text-neutral-400">Abriendo…</div>}><CameraPage/></Suspense>}/><Route path="/internet" element={<Suspense fallback={<div className="p-8 text-neutral-400">Abriendo…</div>}><InternetPage/></Suspense>}/><Route path="/calendario" element={<Suspense fallback={<div className="p-8 text-neutral-400">Abriendo calendario…</div>}><CalendarPage/></Suspense>}/><Route path="/:documentId" element={<Panels kind="document"/>}/><Route path="*" element={<div className="p-10">Esta dirección no existe.</div>}/></Routes></main>
     </div></div>

@@ -5,11 +5,14 @@ import { Link2 } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import ControlButton from '../components/ControlButton';
+import { originalOf, resolvePreview } from '../lib/previews';
 
 export default function Workspace({documentId}:{documentId:string}) {
   const doc = useAppStore.getState().documents.find(d=>d.id===documentId)!;
   const editor = useCreateBlockNote({initialContent:doc.content.length?doc.content:undefined,
     uploadFile:file=>useAppStore.getState().uploadImage(file),
+    // Muestra la versión reducida de las imágenes grandes; la original queda guardada en la nota.
+    resolveFileUrl:resolvePreview,
   });
   const [selection,setSelection]=useState(false);
   const [menu,setMenu]=useState<{x:number;y:number}|null>(null);
@@ -26,7 +29,11 @@ export default function Workspace({documentId}:{documentId:string}) {
     }});
     setMenu(null);
   };
-  return <div ref={container} className="note-editor relative" onContextMenu={event=>{
+  return <div ref={container} className="note-editor relative" onDoubleClick={event=>{
+    // Doble clic sobre una imagen reducida: abre la original en una pestaña.
+    const target=event.target as HTMLElement;
+    if(target instanceof HTMLImageElement){const original=originalOf(target.src);if(original)window.open(original,'_blank','noopener,noreferrer');}
+  }} onContextMenu={event=>{
     if(!editor.getSelectedText().trim())return;
     event.preventDefault();setMenu({x:Math.max(8,Math.min(event.clientX,window.innerWidth-260)),y:Math.max(8,Math.min(event.clientY,window.innerHeight-100))});
   }}>

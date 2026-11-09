@@ -1,5 +1,6 @@
 import { create } from 'zustand';
-import { request, assetUrl } from '../lib/api';
+import { ApiError, request, assetUrl, jsonBody } from '../lib/api';
+import { cacheDelete, cacheGet, cacheKeys, cachePut, contentKey, upsertRows } from '../lib/localCache';
 import { draftStorage } from '../lib/drafts';
 import type { Draft } from '../lib/drafts';
 import { SaveQueue } from '../lib/saveQueue';
@@ -12,7 +13,9 @@ interface PendingConnection { sourceDocId: string; sourceBlockId: string; text: 
 interface Bootstrap { cursor: string; settings: Row; documents: Row[]; whiteboards: Row[]; connections: Row[]; events: Row[]; }
 interface Changes extends Omit<Bootstrap,'settings'> { settings: Row | null; }
 interface AppState extends Settings {
-  isLoaded: boolean; loading: boolean; loadError: string | null; error: string | null;
+  isLoaded: boolean; loading: boolean;
+  /** Supabase no responde: se muestra la copia local y los cambios esperan en este equipo. */
+  offline: boolean; loadError: string | null; error: string | null;
   settingsVersion: number; documents: Document[]; whiteboards: Whiteboard[]; connections: Hiperhilo[];
   events: CalendarEvent[];
   currentDocId: string | null; saveStates: Record<string,SaveState>; generations: Record<string,number>;
@@ -59,15 +62,57 @@ let bootstrapPromise: Promise<void> | null = null;
 let cursor = '';
 let refreshing: Promise<void> | null = null;
 const loading = new Map<string,Promise<void>>();
+// ── Copia local (solo lectura; lo que se guarda va siempre a Supabase) ──
+/** Último espacio recibido del servidor (filas sin contenido + cursor), para abrir sin conexión. */
+let workspace: Bootstrap | null = null;
+let workspaceTimer: ReturnType<typeof setTimeout> | undefined;
+const OFFLINE_AFTER = 6000;
+const withoutContent = (row: Row) => { const { content: _c, snapshot: _s, ...meta } = row; return meta; };
+function saveWorkspace() {
+  clearTimeout(workspaceTimer);
+  workspaceTimer = setTimeout(() => { if (workspace) void cachePut('workspace',workspace); },1000);
+}
+/** Mantiene la copia del espacio al día con lo que confirma el servidor. */
+function rememberRows(key: string, row: Row) {
+  if (!workspace) return;
+  if (key === 'settings:1') workspace.settings = row;
+  else {
+    const list = key.startsWith('document:') ? 'documents' : key.startsWith('event:') ? 'events' : key.startsWith('connection:') ? 'connections' : 'whiteboards';
+    workspace[list] = upsertRows(workspace[list],[withoutContent(row)]);
+  }
+  saveWorkspace();
+}
+/** Guarda el contenido de una página o pizarra tal como está en el servidor (con su versión). */
+function rememberContent(key: string, row: Row) {
+  if (('content' in row || 'snapshot' in row) && (key.startsWith('document:') || key.startsWith('whiteboard:'))) void cachePut(contentKey(key),row);
+}
+/** Borra de la copia el contenido de lo que ya no existe en el servidor. */
+async function pruneCache(data: Bootstrap) {
+  const alive = new Set([...data.documents.map(d => `content:document:${d.id}`),...data.whiteboards.map(w => `content:whiteboard:${w.id}`)]);
+  for (const key of await cacheKeys()) if (key.startsWith('content:') && !alive.has(key)) void cacheDelete(key);
+}
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve,ms));
+/** Pide el espacio; si la API todavía está conectando con Supabase (503) o no responde, reintenta hasta el plazo. */
+async function fetchBootstrap(deadline: number): Promise<Bootstrap> {
+  for (;;) {
+    try { return await request<Bootstrap>('/bootstrap'); }
+    catch (e) {
+      const retryable = e instanceof ApiError && (e.status === 503 || e.status === 0);
+      if (!retryable || Date.now() + 1000 > deadline) throw e;
+      await sleep(1000);
+    }
+  }
+}
 const pendingPatch = (key: string) => queue.pending().find(d => d.key === key)?.patch || {};
 const queue = new SaveQueue(draftStorage, draft => {
   const [kind,...parts] = draft.key.split(':');
   const endpoint = kind === 'settings' ? '/settings' : `/${kind === 'document' ? 'documents' : kind === 'event' ? 'events' : 'whiteboards'}/${encodeURIComponent(parts.join(':'))}`;
-  return request<Row>(endpoint,{method:'PATCH',body:JSON.stringify({...draft.patch,version:draft.version})});
+  return jsonBody({...draft.patch,version:draft.version}).then(init => request<Row>(endpoint,{method:'PATCH',...init}));
 },(key,state,saved) => {
   useAppStore.setState(s => ({ saveStates:{...s.saveStates,[key]:state} }));
   if (saved) applySaved(key,saved);
 },namespace);
+queue.delayFor = key => key.startsWith('whiteboard:') ? 1500 : 600;
 function applyPatch(key: string, patch: Row) {
   if (key === 'settings:1') useAppStore.setState(patch);
   else {
@@ -99,6 +144,7 @@ function upsertRow(key: string, row: Row) {
   if (Object.keys(pending).length) applyPatch(key,pending);
 }
 function applySaved(key: string, row: Row) {
+  rememberRows(key,row); rememberContent(key,row);
   if (key === 'settings:1') useAppStore.setState({...sharedSettings(row),...pendingPatch(key),settingsVersion:Number(row.version)});
   else upsertRow(key,row);
 }
@@ -118,7 +164,7 @@ function editEvent(id: string, patch: Partial<EventInput> & {deletedAt?: string 
 }
 function setDevice(patch: Partial<DevicePrefs>) { writeDevicePrefs(patch); useAppStore.setState(patch); }
 export const useAppStore = create<AppState>((set,get) => ({
-  ...defaults,isLoaded:false,loading:false,loadError:null,error:null,settingsVersion:1,
+  ...defaults,isLoaded:false,loading:false,offline:false,loadError:null,error:null,settingsVersion:1,
   documents:[],whiteboards:[],connections:[],events:[],loadErrors:{},currentDocId:null,saveStates:{},generations:{},orphanDrafts:[],panels:[],replaceTarget:null,
   isSearchOpen:false,pendingConnection:null,isCustomizing:false,editingControl:null,boardFocus:(() => { try { return localStorage.getItem('nontion-board-focus') === 'true'; } catch { return false; } })(),pauseAnimations:localStorage.getItem('nontion-pause-animations') === 'true' || (localStorage.getItem('nontion-pause-animations') === null && window.matchMedia('(prefers-reduced-motion: reduce)').matches),
   setError:error => set({error}),
@@ -128,8 +174,20 @@ export const useAppStore = create<AppState>((set,get) => ({
     set({loading:true,loadError:null});
     bootstrapPromise = (async () => {
       try {
-        const data = await request<Bootstrap>('/bootstrap');
+        // Siempre se intenta Supabase primero; la copia local solo aparece si no responde en ~6 s.
+        const live = fetchBootstrap(Date.now() + OFFLINE_AFTER);
+        let data: Bootstrap, offline = false;
+        try { data = await live; }
+        catch (e) {
+          const cached = await cacheGet<Bootstrap>('workspace');
+          if (!cached) {
+            // Sin copia (primera vez en este equipo): se sigue esperando a Supabase un poco más.
+            data = await fetchBootstrap(Date.now() + 20_000).catch(() => { throw e; });
+          } else { data = cached; offline = true; }
+        }
         cursor = data.cursor;
+        if (!offline) { workspace = data; saveWorkspace(); void pruneCache(data); }
+        else workspace = data;
         set({...sharedSettings(data.settings),...serverDevicePrefs(data.settings),...readDevicePrefs(),settingsVersion:Number(data.settings.version),documents:data.documents.map(documentRow),whiteboards:data.whiteboards.map(boardRow),connections:data.connections.map(connectionRow),events:(data.events || []).map(eventRow)});
         const drafts = await draftStorage.all().catch(() => { set({error:'El navegador no permite respaldar borradores. Mantén la pestaña abierta si hay cambios pendientes.'}); return []; });
         const orphanDrafts=drafts.filter(d => !d.key.startsWith(namespace));
@@ -139,7 +197,7 @@ export const useAppStore = create<AppState>((set,get) => ({
           if (remote) { queue.recover({...draft,key},Number(remote.version),remote); applyPatch(key,draft.patch); }
           else orphanDrafts.push(draft);
         }
-        set({isLoaded:true,orphanDrafts});
+        set({isLoaded:true,orphanDrafts,offline});
         queue.retry();
       } catch(e) { set({loadError:(e as Error).message || 'No se pudo cargar el espacio.'}); }
       finally { set({loading:false}); bootstrapPromise = null; }
@@ -181,15 +239,23 @@ export const useAppStore = create<AppState>((set,get) => ({
           if (index < 0) connections.unshift(row); else connections[index] = row;
         }
         const settings = data.settings && !queue.has('settings:1') ? {...sharedSettings(data.settings),settingsVersion:Number(data.settings.version)} : {};
-        set({documents,whiteboards,connections,events,generations,...settings});
+        set({documents,whiteboards,connections,events,generations,...settings,offline:false});
         cursor = data.cursor;
+        if (workspace) {
+          workspace = {...workspace,cursor,documents:upsertRows(workspace.documents,data.documents),whiteboards:upsertRows(workspace.whiteboards,data.whiteboards),
+            connections:upsertRows(workspace.connections,data.connections),events:upsertRows(workspace.events,data.events || []),settings:data.settings ?? workspace.settings};
+          saveWorkspace();
+        }
         for (const ref of reload) {
           try {
             await get().loadResource(ref);
             set(s => ({generations:{...s.generations,[resourceKey(ref)]:(s.generations[resourceKey(ref)] || 0)+1}}));
           } catch { /* se reintentará en la próxima consulta */ }
         }
-      } catch { /* Pending writes remain visible; a background refresh never clears local state. */ }
+      } catch {
+        // Lo pendiente sigue visible; una consulta fallida nunca borra el estado local.
+        set({offline:true});
+      }
       finally { refreshing = null; }
     })();
     return refreshing;
@@ -200,8 +266,21 @@ export const useAppStore = create<AppState>((set,get) => ({
     if (!task) {
       task = (async () => {
         try {
-          const row = await request<Row>(`/${ref.kind === 'document' ? 'documents' : 'whiteboards'}/${encodeURIComponent(ref.id)}`);
-          upsertRow(key,row);
+          const cached = await cacheGet<Row>(contentKey(key));
+          const meta = (ref.kind === 'document' ? get().documents : get().whiteboards).find(d => d.id === ref.id);
+          // Misma versión que la del servidor: se abre al instante desde la copia local, sin descargar.
+          if (cached && meta && Number(cached.version) === meta.version) upsertRow(key,cached);
+          else {
+            let row: Row;
+            try { row = await request<Row>(`/${ref.kind === 'document' ? 'documents' : 'whiteboards'}/${encodeURIComponent(ref.id)}`); }
+            catch (e) {
+              // Sin conexión: se muestra la última versión guardada en este equipo.
+              if (!cached || (e instanceof ApiError && e.status !== 0 && e.status < 500)) throw e;
+              row = cached; set({offline:true});
+            }
+            if (row !== cached) rememberContent(key,row);
+            upsertRow(key,row);
+          }
           set(s => { const loadErrors = {...s.loadErrors}; delete loadErrors[key]; return {loadErrors}; });
         } catch (e) {
           set(s => ({loadErrors:{...s.loadErrors,[key]:(e as Error).message || 'No se pudo abrir este recurso.'}}));
@@ -257,11 +336,11 @@ export const useAppStore = create<AppState>((set,get) => ({
   setAvatarImage:avatarImage => { void get().syncSettings({avatarImage}); },
   setMenuIconImage:menuIconImage => { void get().syncSettings({menuIconImage}); },
   createDocument:async () => {
-    try { const doc = documentRow(await request<Row>('/documents',{method:'POST',body:'{}'})); set(s => ({documents:[...s.documents,doc]})); return doc.id; }
+    try { const row = await request<Row>('/documents',{method:'POST',body:'{}'}); rememberRows('document:',row); rememberContent(`document:${row.id}`,row); const doc = documentRow(row); set(s => ({documents:[...s.documents,doc]})); return doc.id; }
     catch(e) { set({error:(e as Error).message}); return ''; }
   },
   createWhiteboard:async () => {
-    try { const board = boardRow(await request<Row>('/whiteboards',{method:'POST',body:'{}'})); set(s => ({whiteboards:[...s.whiteboards,board]})); return board.id; }
+    try { const row = await request<Row>('/whiteboards',{method:'POST',body:'{}'}); rememberRows('whiteboard:',row); rememberContent(`whiteboard:${row.id}`,row); const board = boardRow(row); set(s => ({whiteboards:[...s.whiteboards,board]})); return board.id; }
     catch(e) { set({error:(e as Error).message}); return ''; }
   },
   createEvent:async input => {
@@ -269,7 +348,8 @@ export const useAppStore = create<AppState>((set,get) => ({
     const id = crypto.randomUUID();
     set(s => ({events:[...s.events,{...input,id,version:0,deletedAt:null}]}));
     try {
-      const saved = eventRow(await request<Row>('/events',{method:'POST',body:JSON.stringify({id,...input})}));
+      const created = await request<Row>('/events',{method:'POST',body:JSON.stringify({id,...input})}); rememberRows('event:',created);
+      const saved = eventRow(created);
       set(s => ({events:s.events.map(e => e.id === id ? saved : e)}));
       return id;
     } catch(e) {
@@ -297,6 +377,7 @@ export const useAppStore = create<AppState>((set,get) => ({
     if (!pending) return;
     const id = crypto.randomUUID();
     const row = await request<Row>('/connections',{method:'POST',body:JSON.stringify({id,sourceDocId:pending.sourceDocId,sourceBlockId:pending.sourceBlockId,sourceText:pending.text,destinationType:target.kind,destinationId:target.id})});
+    rememberRows('connection:',row);
     // Persist the stable connection before modifying the editor selection.
     pending.apply(`/hilo/${id}`);
     set(s => ({connections:[connectionRow(row),...s.connections],pendingConnection:null,isSearchOpen:false}));

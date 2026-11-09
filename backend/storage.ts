@@ -13,6 +13,9 @@ import './db.ts'; // carga backend/.env
  */
 export const assetsDir = fileURLToPath(new URL('./data/assets/', import.meta.url));
 export const ASSET_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(png|jpg|webp|gif)$/;
+/** Versión reducida de una imagen (máx. 1600 px, WebP), generada por el navegador: «previews/<uuid>.webp». */
+export const PREVIEW_NAME = /^previews\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.webp$/;
+const servable = (name: string) => ASSET_NAME.test(name) || PREVIEW_NAME.test(name);
 const MIME: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif' };
 
 interface Cloud { url: string; key: string; bucket: string; }
@@ -52,7 +55,8 @@ export async function uploadToCloud(name: string, data: Buffer, cloud = cloudCon
   if (!cloud) return false;
   const response = await call(cloud, `object/${cloud.bucket}/${name}`, {
     method: 'POST', body: new Uint8Array(data),
-    headers: { 'Content-Type': MIME[name.split('.').pop()!], 'x-upsert': 'false', 'cache-control': '31536000' },
+    // Las vistas reducidas se pueden regenerar (se reemplazan); los originales nunca.
+    headers: { 'Content-Type': MIME[name.split('.').pop()!], 'x-upsert': PREVIEW_NAME.test(name) ? 'true' : 'false', 'cache-control': '31536000' },
   });
   if (response.ok) return true;
   const text = await response.text();
@@ -84,10 +88,20 @@ export async function listCloud(cloud = cloudConfig()): Promise<string[]> {
 }
 
 async function writeCache(name: string, data: Buffer) {
-  await mkdir(assetsDir, { recursive: true });
-  const temporary = path.join(assetsDir, `.${name}.${process.pid}.tmp`);
+  const target = path.join(assetsDir, name);
+  await mkdir(path.dirname(target), { recursive: true });
+  const temporary = path.join(path.dirname(target), `.${path.basename(name)}.${process.pid}.tmp`);
   await writeFile(temporary, data);
-  await rename(temporary, path.join(assetsDir, name)).catch(async () => { await unlink(temporary).catch(() => {}); });
+  await rename(temporary, target).catch(async () => { await unlink(temporary).catch(() => {}); });
+}
+
+/** Guarda (o reemplaza) la versión reducida de una imagen: disco y, si corresponde, Supabase. */
+export async function savePreview(id: string, data: Buffer) {
+  const name = `previews/${id}.webp`;
+  if (!PREVIEW_NAME.test(name)) throw new Error('Nombre inválido');
+  await writeCache(name, data);
+  await uploadToCloud(name, data);
+  return `/assets/${name}`;
 }
 
 /** Guarda una imagen nueva: disco local y, si corresponde, la nube. Si la nube falla, no queda a medias. */
@@ -103,7 +117,7 @@ const downloads = new Map<string, Promise<Buffer | null>>();
 /** Descarga a la caché local una imagen que solo existe en la nube. */
 export function fetchIntoCache(name: string): Promise<Buffer | null> {
   const cloud = cloudConfig();
-  if (!cloud || !ASSET_NAME.test(name)) return Promise.resolve(null);
+  if (!cloud || !servable(name)) return Promise.resolve(null);
   let task = downloads.get(name);
   if (!task) {
     task = downloadFromCloud(name, cloud).then(async data => { if (data) await writeCache(name, data); return data; })

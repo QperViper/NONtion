@@ -6,7 +6,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { isNode, readPid, stopApi, supervisorPidFile } from './api-process.mjs';
+import { alive, isNode, readPid, stopApi, supervisorPidFile } from './api-process.mjs';
+import { rotatingLog } from './rotating-log.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const logs = path.join(root, 'logs');
@@ -19,11 +20,14 @@ const env = readEnv(path.join(root, 'backend', '.env'));
 const port = Number(process.env.PORT || env.PORT || 4000);
 const appUrl = `http://127.0.0.1:${port}/`;
 const launcherLog = path.join(logs, 'lanzador.log');
+const launchedAt = Date.now();
 
+let writeLauncherLog = null;
 function log(...parts) {
   const line = `[${new Date().toLocaleString('es')}] ${parts.join(' ')}`;
-  console.log(line);
-  try { writeFileSync(launcherLog, line + '\n', { flag: 'a' }); } catch { /* el registro no debe impedir el arranque */ }
+  try { console.log(line); } catch { /* sin consola */ }
+  writeLauncherLog ??= rotatingLog(launcherLog);
+  writeLauncherLog(line + '\n');
 }
 
 function readEnv(file) {
@@ -43,9 +47,8 @@ let apiStartedAt = 0;
 async function health() {
   try {
     const response = await fetch(`${appUrl}api/health`, { signal: AbortSignal.timeout(4000) });
-    if (!response.ok) return 'db';
     apiStartedAt = Number((await response.json().catch(() => ({}))).startedAt) || 0;
-    return 'ok';
+    return response.ok ? 'ok' : 'db';
   } catch { return null; }
 }
 
@@ -107,7 +110,8 @@ function ensureDependencies() {
 
 /** Arranca el vigilante, que a su vez arranca la API y la relanza si se cae. */
 function startApi() {
-  const out = openSync(path.join(logs, 'api.log'), 'a');
+  // El vigilante escribe logs/api.log con límite de tamaño; lo que él mismo imprima por error va a vigilante.log.
+  const out = openSync(path.join(logs, 'vigilante.log'), 'a');
   const child = spawn(process.execPath, [path.join(root, 'scripts', 'supervise.mjs'), '--ui'], {
     cwd: root, detached: true, windowsHide: true, stdio: ['ignore', out, out],
   });
@@ -197,8 +201,8 @@ async function main() {
     return showProblem('Falta backend/.env', 'Copia backend/.env.example a backend/.env y escribe tu DATABASE_URL.');
   }
   let state = await health();
-  if (state === 'ok' && await restartIfOutdated()) state = null;
-  if (state === 'ok') { log('La API ya estaba en marcha.'); open(appUrl); return; }
+  if (state !== null && await restartIfOutdated()) state = null;
+  if (state !== null) { log(`La API ya estaba en marcha${state === 'db' ? ' (sin conexión con la base de datos: se abre con la copia local)' : ''}.`); open(appUrl); return; }
   if (state === null) {
     try { ensureDependencies(); } catch (error) { return showProblem('Faltan dependencias', error.message); }
     try { ensureBuild(); } catch (error) { return showProblem('La interfaz no compiló', error.message); }
@@ -207,13 +211,18 @@ async function main() {
   const deadline = Date.now() + (startup ? 180_000 : 60_000);
   // Si el vigilante ya está en marcha (por ejemplo, esperando a que vuelva internet), no se lanza otro.
   let pid = isNode(readPid(supervisorPidFile)) ? readPid(supervisorPidFile) : 0;
+  let started = 0, dbSince = 0;
   while (Date.now() < deadline) {
     state = await health();
-    if (state === 'ok') { log('Lista en', appUrl); open(appUrl); return; }
-    if (state === null && !isNode(pid)) pid = startApi();
-    await sleep(1500);
+    if (state === 'ok') { log(`Lista en ${appUrl} (${((Date.now() - launchedAt) / 1000).toFixed(1)} s desde el clic)`); open(appUrl); return; }
+    // Sin internet (por ejemplo, en la universidad): la app abre igual con la copia local y se sincroniza al volver.
+    // (se espera unos segundos: al arrancar, la API tarda un momento en conectar con Supabase).
+    if (state === 'db') dbSince ||= Date.now(); else dbSince = 0;
+    if (state === 'db' && Date.now() - dbSince > 8000) { log(`Abierta sin conexión con la base de datos (${((Date.now() - launchedAt) / 1000).toFixed(1)} s desde el clic). Se sigue reintentando.`); open(appUrl); return; }
+    // El que acabamos de iniciar basta con verlo vivo; uno heredado se confirma que siga siendo Node (más lento en Windows).
+    if (state === null && !(pid && (pid === started ? alive(pid) : isNode(pid)))) { pid = startApi(); started = pid; }
+    await sleep(250);
   }
-  if (state === 'db') return showProblem('La base de datos no responde', 'La API está en marcha, pero no logra conectarse a la base de datos. Revisa la conexión a internet de este equipo y la DATABASE_URL de backend/.env. nontion sigue reintentando solo: cuando vuelva la conexión, abre de nuevo el acceso directo.');
   let last = '';
   try { last = readFileSync(path.join(logs, 'api.log'), 'utf8').trim().split(/\r?\n/).filter(line => !/La API se detuvo/.test(line)).pop() || ''; } catch { /* sin registro todavía */ }
   showProblem('La API no arrancó', `${last ? `Último mensaje: «${last}». ` : ''}Suele deberse a la DATABASE_URL, a que la base de datos o internet no están disponibles, o a otro programa usando el puerto ${port}. nontion sigue reintentando solo en segundo plano.`);

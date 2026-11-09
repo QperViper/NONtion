@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { pool } from './db.ts';
 import type { PoolClient } from 'pg';
 import { HttpError, object, text, uuid, validateEvent, validatePatch } from './validation.ts';
-import { assetsDir, cloudAssets, saveAsset } from './storage.ts';
+import { assetsDir, cloudAssets, saveAsset, savePreview } from './storage.ts';
 import { quickSearch } from './internet.ts';
 import { captureDir, captureStatus, resolveCapture, startCapture, stopCapture } from './capture.ts';
 import { spawn } from 'node:child_process';
@@ -18,6 +18,13 @@ app.use(cors({ origin(origin, callback) {
   else callback(new HttpError(403, 'Origen no permitido.'));
 } }));
 app.use(express.json({ limit: '20mb' }));
+/** false mientras la base de datos todavía no conecta (sin internet): las rutas que la usan responden 503 al instante. */
+export const database = { ready: true };
+const NO_DATABASE = /^\/(health|internet|capture|assets)(\/|$)/;
+app.use('/api', (req, res, next) => {
+  if (database.ready || NO_DATABASE.test(req.path)) return next();
+  res.status(503).json({ error: 'Sin conexión con Supabase. Tus cambios quedan guardados en este equipo y se envían al volver la conexión.' });
+});
 // Caché local primero; lo que falte se descarga de Supabase Storage (si está configurado).
 app.use('/assets', express.static(assetsDir, { immutable: true, maxAge: '1y', setHeaders(res) { res.setHeader('X-Content-Type-Options', 'nosniff'); } }), cloudAssets);
 app.post('/api/assets', express.raw({ type: ['image/png','image/jpeg','image/webp','image/gif'], limit: '12mb' }), async (req, res) => {
@@ -36,7 +43,11 @@ app.post('/api/assets', express.raw({ type: ['image/png','image/jpeg','image/web
   res.status(201).json({ url: `/assets/${filename}` });
 });
 const startedAt = Date.now();
-app.get('/api/health', async (_req,res) => { await pool.query('SELECT 1'); res.json({ ok: true, startedAt }); });
+// 503 = la API está en marcha pero sin base de datos (el lanzador abre la app igual, con la copia local).
+app.get('/api/health', async (_req,res) => {
+  const ok = database.ready && await pool.query('SELECT 1').then(() => true, () => false);
+  res.status(ok ? 200 : 503).json({ ok, startedAt });
+});
 // Metadatos sin el contenido: el contenido de cada página o pizarra se pide al abrirla.
 // thread_links permite mostrar conexiones entrantes sin descargar la página de origen.
 const DOC_META = `id,parent_id,title,icon,cover_image,is_favorite,created_at,updated_at,version,deleted_at,
@@ -95,6 +106,15 @@ app.post('/api/whiteboards', async (req,res) => {
   const title = body.title === undefined ? 'Nueva pizarra' : text(body.title);
   const result = await pool.query('INSERT INTO whiteboards(id,name) VALUES($1,$2) RETURNING *',[randomUUID(),title]);
   res.status(201).json(result.rows[0]);
+});
+// Vista reducida de una imagen (la genera el navegador la primera vez que la muestra). WebP de hasta 1,5 MB.
+app.put('/api/assets/:id/preview', express.raw({ type: 'image/webp', limit: '1500kb' }), async (req,res) => {
+  const id = uuid(req.params.id);
+  const data = req.body as Buffer;
+  // Firma de un archivo WebP: «RIFF....WEBP».
+  if (!Buffer.isBuffer(data) || data.length < 12 || data.toString('ascii', 0, 4) !== 'RIFF' || data.toString('ascii', 8, 12) !== 'WEBP') throw new HttpError(415, 'Se esperaba una imagen WebP.');
+  try { res.json({ url: await savePreview(id, data) }); }
+  catch (error) { console.error('No se pudo guardar la vista reducida:', (error as Error).message); throw new HttpError(502, 'No se pudo guardar la vista reducida.'); }
 });
 // Panel «Internet»: respuestas rápidas (las páginas completas se abren en una pestaña de tu navegador).
 app.get('/api/internet/search', async (req,res) => { res.json(await quickSearch(req.query.q)); });

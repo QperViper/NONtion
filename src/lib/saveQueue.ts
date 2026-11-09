@@ -10,6 +10,8 @@ export class SaveQueue {
   private send: (draft: Draft) => Promise<Record<string,unknown>>;
   private notify: (key: string, state: SaveState, saved?: Record<string,unknown>) => void;
   private namespace: string;
+  /** Espera antes de enviar (agrupa cambios seguidos). Las pizarras usan más: se dibuja de forma continua. */
+  delayFor: (key: string) => number = () => 600;
   constructor(storage: DraftStorage, send: (draft: Draft) => Promise<Record<string,unknown>>,
     notify: (key: string, state: SaveState, saved?: Record<string,unknown>) => void, namespace = '') {
     this.storage=storage;this.send=send;this.notify=notify;this.namespace=namespace;
@@ -36,7 +38,7 @@ export class SaveQueue {
     let persisted = true;
     try { await this.persist(entry); }
     catch { persisted = false; this.notify(key,{status:entry.blocked?'conflict':'error',remote:entry.remote,message:'No se pudo respaldar el borrador. Mantén esta pestaña abierta.'}); }
-    if (!entry.blocked) entry.timer = setTimeout(() => { void this.flush(key); },600);
+    if (!entry.blocked) entry.timer = setTimeout(() => { void this.flush(key); },this.delayFor(key));
     return persisted;
   }
   recover(draft: Draft, remoteVersion: number, remote: Record<string,unknown>) {

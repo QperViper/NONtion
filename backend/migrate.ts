@@ -3,13 +3,26 @@ import { fileURLToPath } from 'node:url';
 import { pool } from './db.ts';
 import type { Pool } from 'pg';
 
+const migrationFiles = async () => (await readdir(new URL('./migrations/', import.meta.url))).filter(name => /^\d+_[a-z_]+\.sql$/.test(name)).sort();
+
+/** Camino rápido del arranque: dos consultas cortas. Con Supabase lejos, cada viaje cuenta (~200 ms). */
+export async function pendingMigrations(target: Pool = pool) {
+  const files = (await migrationFiles()).map(name => name.slice(0, -4));
+  // (Una base nueva no tiene la tabla: no se puede consultar en la misma sentencia, Postgres la valida antes.)
+  const exists = await target.query<{ name: string | null }>("SELECT to_regclass('public.schema_migrations') AS name");
+  if (!exists.rows[0].name) return files;
+  const applied = new Set((await target.query<{ id: string }>('SELECT id FROM schema_migrations')).rows.map(row => row.id));
+  return files.filter(id => !applied.has(id));
+}
+
 export async function migrate(target: Pool = pool) {
+  if (!(await pendingMigrations(target)).length) return;
   const client = await target.connect();
   try {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock(78163412)');
     await client.query('CREATE TABLE IF NOT EXISTS schema_migrations (id text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())');
-    const migrations = (await readdir(new URL('./migrations/', import.meta.url))).filter(name => /^\d+_[a-z_]+\.sql$/.test(name)).sort();
+    const migrations = await migrationFiles();
     for (const filename of migrations) {
       const id = filename.slice(0, -4);
       const applied = await client.query('SELECT id FROM schema_migrations WHERE id=$1', [id]);

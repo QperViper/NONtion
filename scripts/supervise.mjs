@@ -5,22 +5,27 @@ import { spawn } from 'node:child_process';
 import { rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { rotatingLog } from './rotating-log.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const childPidFile = path.join(root, 'logs', 'api-child.pid');
 const stamp = () => new Date().toLocaleString('es');
+// La salida de la API pasa por aquí y se escribe con límite de tamaño (logs/api.log + api.log.1).
+const write = rotatingLog(path.join(root, 'logs', 'api.log'));
 let child = null, stopping = false, delay = 2000;
 
 function start() {
   const startedAt = Date.now();
   child = spawn(process.execPath, ['--import', './backend/node_modules/tsx/dist/loader.mjs', 'backend/server.ts', ...process.argv.slice(2)],
-    { cwd: root, stdio: 'inherit', windowsHide: true });
+    { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  child.stdout.on('data', write);
+  child.stderr.on('data', write);
   writeFileSync(childPidFile, String(child.pid));
   child.on('exit', (code, signal) => {
     if (stopping) return;
     // Si llevaba más de un minuto funcionando, fue un fallo puntual: se reinicia rápido.
     if (Date.now() - startedAt > 60_000) delay = 2000;
-    console.error(`[${stamp()}] La API se detuvo (${signal || `código ${code}`}). Se reinicia en ${delay / 1000} s.`);
+    write(`[${stamp()}] La API se detuvo (${signal || `código ${code}`}). Se reinicia en ${delay / 1000} s.\n`);
     setTimeout(start, delay);
     delay = Math.min(delay * 2, 30_000);
   });
