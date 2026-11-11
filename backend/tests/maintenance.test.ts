@@ -4,29 +4,31 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
+import { startApi } from './harness.ts';
 
-test('papelera de 30 días y vistas reducidas', { skip: process.env.NONTION_INTEGRATION !== '1' }, async t => {
-  const { app } = await import('../app.ts'); const { pool } = await import('../db.ts');
+test('papelera de 30 días y vistas reducidas', async t => {
+  const api = await startApi();
+  const db = api.localDb;
   const { emptyOldTrash } = await import('../maintenance.ts'); const { assetsDir } = await import('../storage.ts');
-  const server = app.listen(0, '127.0.0.1'); await new Promise<void>(r => server.on('listening', r));
-  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const base = api.origin;
   try {
     await t.test('solo borra lo eliminado hace más de 30 días; conserva subpáginas y eventos enlazados', async () => {
-      const old = randomUUID(), recent = randomUUID(), child = randomUUID(), event = randomUUID();
-      await pool.query("INSERT INTO documents(id,title,deleted_at) VALUES ($1,'QA vieja',now()-interval '31 days'),($2,'QA reciente',now()-interval '29 days')", [old, recent]);
-      await pool.query("INSERT INTO documents(id,title,parent_id) VALUES ($1,'QA hija',$2)", [child, old]);
-      await pool.query("INSERT INTO hyperthreads(source_doc_id,source_text,destination_title,destination_path) VALUES ($1,'x','y','/z')", [old]);
-      await pool.query("INSERT INTO events(id,title,start_at,end_at,document_id) VALUES ($1,'QA evento',now(),now(),$2)", [event, old]);
-      const boardOld = (await pool.query("INSERT INTO whiteboards(id,name,deleted_at) VALUES ($1,'QA pizarra',now()-interval '40 days') RETURNING id", [`qa-${randomUUID()}`])).rows[0].id;
-      const removed = await emptyOldTrash(30);
-      assert.ok(removed.documents >= 1 && removed.whiteboards >= 1);
-      const ids = (await pool.query('SELECT id FROM documents WHERE id = ANY($1)', [[old, recent, child]])).rows.map(r => r.id).sort();
-      assert.deepEqual(ids, [child, recent].sort(), 'la vieja se borró; la reciente y la hija siguen');
-      assert.equal((await pool.query('SELECT parent_id FROM documents WHERE id=$1', [child])).rows[0].parent_id, null, 'la hija queda en la raíz');
-      assert.equal((await pool.query('SELECT document_id FROM events WHERE id=$1', [event])).rows[0].document_id, null, 'el evento se conserva sin enlace');
-      assert.equal(Number((await pool.query('SELECT count(*) FROM hyperthreads WHERE source_doc_id=$1', [old])).rows[0].count), 0);
-      assert.equal(Number((await pool.query('SELECT count(*) FROM whiteboards WHERE id=$1', [boardOld])).rows[0].count), 0);
-      await pool.query('DELETE FROM documents WHERE id = ANY($1)', [[recent, child]]); await pool.query('DELETE FROM events WHERE id=$1', [event]);
+      const old = randomUUID(), recent = randomUUID(), child = randomUUID(), event = randomUUID(), thread = randomUUID(), boardOld = `qa-${randomUUID()}`;
+      const ago = (days: number) => new Date(Date.now() - days * 864e5).toISOString();
+      const page = (title: string, extra: object = {}) => ({ parent_id: null, title, icon: null, cover_image: null, content: [], is_favorite: false, created_at: ago(40), ...extra });
+      db.insert('documents', old, page('QA vieja', { deleted_at: ago(31) }));
+      db.insert('documents', recent, page('QA reciente', { deleted_at: ago(29) }));
+      db.insert('documents', child, page('QA hija', { parent_id: old }));
+      db.insert('hyperthreads', thread, { source_doc_id: old, source_text: 'x', source_block_id: null, destination_type: null, destination_id: null, destination_title: 'y', destination_path: '/z', created_at: ago(40) });
+      db.insert('events', event, { title: 'QA evento', description: '', emoji: null, color: '#2383e2', priority: 'media', all_day: false, start_at: ago(1), end_at: ago(1), completed: false, document_id: old, created_at: ago(1) });
+      db.insert('whiteboards', boardOld, { name: 'QA pizarra', snapshot: {}, deleted_at: ago(40) });
+      const removed = emptyOldTrash(30, { db, remote: false });
+      assert.deepEqual(removed, { events: 0, whiteboards: 1, documents: 1 });
+      assert.deepEqual(db.all('documents').map(r => r.id).sort(), [child, recent].sort(), 'la vieja se borró; la reciente y la hija siguen');
+      assert.equal(db.get('documents', child)!.parent_id, null, 'la hija queda en la raíz');
+      assert.equal(db.get('events', event)!.document_id, null, 'el evento se conserva sin enlace');
+      assert.equal(db.get('hyperthreads', thread), undefined);
+      assert.equal(db.raw('whiteboards', boardOld), undefined);
     });
     await t.test('vista reducida: solo WebP, se guarda y se sirve en /assets/previews/', async () => {
       const id = randomUUID();
@@ -42,5 +44,5 @@ test('papelera de 30 días y vistas reducidas', { skip: process.env.NONTION_INTE
       await rm(path.join(assetsDir, 'previews', `${id}.webp`), { force: true });
       assert.equal(existsSync(path.join(assetsDir, 'previews', `${id}.webp`)), false);
     });
-  } finally { server.close(); await pool.end(); }
+  } finally { await api.close(); }
 });

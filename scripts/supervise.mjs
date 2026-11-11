@@ -1,5 +1,5 @@
 // Vigilante de la API: la mantiene en marcha. Si el proceso se cae (corte de red, error inesperado,
-// base de datos todavía no disponible al encender), lo vuelve a arrancar con esperas crecientes (2 s → 30 s).
+// archivo bloqueado al encender), lo vuelve a arrancar con esperas crecientes (2 s → 30 s).
 // Lo inicia scripts/launch.mjs; scripts/stop.mjs lo detiene junto con la API.
 import { spawn } from 'node:child_process';
 import { rmSync, writeFileSync } from 'node:fs';

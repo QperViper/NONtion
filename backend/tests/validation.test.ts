@@ -11,7 +11,7 @@ test('rechaza versiones ausentes, campos arbitrarios y rangos fuera de contrato'
   assert.throws(()=>uuid('not-a-uuid'));
 });
 test('el título vacío se normaliza y contenido vacío sigue siendo un cambio válido',()=>{
-  assert.deepEqual(validatePatch({version:1,title:'',content:[]},'document'),[{column:'title',value:'Sin título'},{column:'content',value:'[]'}]);
+  assert.deepEqual(validatePatch({version:1,title:'',content:[]},'document'),[{column:'title',value:'Sin título'},{column:'content',value:[]}]);
 });
 test('papelera reversible y personalización solo admiten valores conocidos',()=>{
   assert.deepEqual(validatePatch({version:1,deletedAt:null},'document'),[{column:'deleted_at',value:null}]);

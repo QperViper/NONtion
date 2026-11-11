@@ -6,6 +6,7 @@ import { useAppStore, resourcePath } from '../../store/useAppStore';
 import ImageAsset from '../ImageAsset';
 import ActionControls from './ActionControls';
 import ControlButton from '../ControlButton';
+import SyncIndicator from '../SyncIndicator';
 
 export default function Sidebar({onOpenSettings,onOpenTrash}:{onOpenSettings:()=>void;onOpenTrash:()=>void}) {
   const documents = useAppStore(s => s.documents);
@@ -54,6 +55,7 @@ export default function Sidebar({onOpenSettings,onOpenTrash}:{onOpenSettings:()=
       </section>)}
       {documents.some(d=>d.isFavorite&&!d.deletedAt)&&<section><h2 className="nav-heading">FAVORITOS</h2>{documents.filter(d=>d.isFavorite&&!d.deletedAt).map(d=><ControlButton key={d.id} controlId="resource.favorite" label={`Abrir ${d.title}`} className="nav-action w-full" icon={<Star size={15}/>} onClick={()=>navigate(`/${d.id}`)}><span className="truncate">{d.title}</span></ControlButton>)}</section>}
     </nav>
+    <div className="px-3 pb-3"><SyncIndicator/></div>
     <div className="resize-handle" role="separator" aria-label="Ancho de barra lateral" aria-orientation="vertical" tabIndex={0}
       onKeyDown={e=>{if(e.key==='ArrowRight'||e.key==='ArrowLeft'){e.preventDefault();useAppStore.getState().setSidebarWidth(width+(e.key==='ArrowRight'?20:-20));}}}
       onPointerDown={e=>{e.currentTarget.setPointerCapture(e.pointerId);}}

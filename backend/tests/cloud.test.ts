@@ -6,8 +6,8 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { readFile, unlink } from 'node:fs/promises';
 import path from 'node:path';
-import pg from 'pg';
-import { poolConfig } from '../db.ts';
+import { mkdtempSync } from 'node:fs';
+import os from 'node:os';
 
 /** Imitación mínima de la API de Supabase Storage (las rutas y respuestas que usa la app). */
 async function fakeStorage(key: string) {
@@ -38,20 +38,12 @@ async function fakeStorage(key: string) {
   return { server, objects, buckets, url: `http://127.0.0.1:${(server.address() as { port: number }).port}` };
 }
 
-test('conexión: local sin TLS, remota cifrada; sslmode de la URL no interfiere', () => {
-  assert.equal(poolConfig('postgresql://u:p@127.0.0.1:5432/NONtion').ssl, false);
-  assert.equal(poolConfig('postgresql://u:p@localhost/NONtion').ssl, false);
-  const remote = poolConfig('postgresql://postgres.ref:p@aws-0-us-west-2.pooler.supabase.com:5432/postgres?sslmode=require');
-  assert.deepEqual(remote.ssl, { rejectUnauthorized: false });
-  assert.equal(remote.max, 4);
-  assert.doesNotMatch(String(remote.connectionString), /sslmode/);
-});
-
 test('Supabase Storage: subir, no duplicar, descargar a la caché y servir /assets', async () => {
   const key = 'sb_secret_prueba';
   const fake = await fakeStorage(key);
   process.env.SUPABASE_URL = fake.url;
   process.env.SUPABASE_SECRET_KEY = key;
+  process.env.NONTION_DATA_DIR = mkdtempSync(path.join(os.tmpdir(), 'nontion-cloud-'));
   const storage = await import('../storage.ts');
   const name = `${randomUUID()}.png`;
   const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3]);
@@ -59,7 +51,7 @@ test('Supabase Storage: subir, no duplicar, descargar a la caché y servir /asse
     await storage.ensureBucket();
     assert.ok(fake.buckets.has('nontion-assets'));
     await storage.ensureBucket(); // segunda vez: ya existe
-    await storage.saveAsset(name, png);
+    assert.deepEqual(await storage.saveAsset(name, png), { uploaded: true });
     assert.deepEqual(fake.objects.get(`nontion-assets/${name}`), png);
     assert.equal(await storage.uploadToCloud(name, png), false, 'un duplicado no es un error');
     // Otro equipo: la imagen no está en su caché y se descarga una sola vez aunque se pida dos veces a la vez.
@@ -81,12 +73,18 @@ test('Supabase Storage: subir, no duplicar, descargar a la caché y servir /asse
       assert.equal(served.headers.get('content-type'), 'image/png');
       assert.deepEqual(Buffer.from(await served.arrayBuffer()), png);
       assert.equal((await fetch(`${base}/assets/${randomUUID()}.png`)).status, 404);
-      // Si la nube rechaza la subida, no queda una copia local huérfana.
+      // Si la nube no responde (sin internet), la imagen se guarda en local y queda pendiente para la sincronización.
       process.env.SUPABASE_SECRET_KEY = 'clave-mala';
       const gif = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
-      const rejected = await fetch(`${base}/api/assets`, { method: 'POST', headers: { 'Content-Type': 'image/gif' }, body: gif });
-      assert.equal(rejected.status, 502);
+      const accepted = await fetch(`${base}/api/assets`, { method: 'POST', headers: { 'Content-Type': 'image/gif' }, body: gif });
+      assert.equal(accepted.status, 201);
+      const pendingName = (await accepted.json() as { url: string }).url.replace('/assets/', '');
+      const { localDb } = await import('../localDb.ts');
+      assert.deepEqual(localDb.meta.pending_assets, [pendingName]);
       process.env.SUPABASE_SECRET_KEY = key;
+      // La sincronización la sube después.
+      assert.equal(await storage.uploadPending(pendingName), true);
+      assert.ok(fake.objects.has(`nontion-assets/${pendingName}`));
       // Completar la caché desde la nube (lo usa el respaldo diario).
       await unlink(path.join(storage.assetsDir, name));
       assert.equal(await storage.syncCacheFromCloud(), 1);
@@ -96,46 +94,5 @@ test('Supabase Storage: subir, no duplicar, descargar a la caché y servir /asse
     await unlink(path.join(storage.assetsDir, name)).catch(() => {});
     fake.server.close();
     delete process.env.SUPABASE_URL; delete process.env.SUPABASE_SECRET_KEY;
-    const { pool } = await import('../db.ts'); await pool.end().catch(() => {});
-  }
-});
-
-test('traspaso: copia todo de la base local a otra base, sube imágenes y se niega a pisar datos', { skip: process.env.NONTION_TRANSFER_TARGET ? false : 'Define NONTION_TRANSFER_TARGET (base vacía de pruebas).' }, async () => {
-  const target = process.env.NONTION_TRANSFER_TARGET!;
-  const source = new pg.Pool(poolConfig(process.env.DATABASE_URL));
-  const key = 'sb_secret_traspaso';
-  const fake = await fakeStorage(key);
-  const saved = { db: process.env.DATABASE_URL, local: process.env.LOCAL_DATABASE_URL };
-  process.env.SUPABASE_URL = fake.url; process.env.SUPABASE_SECRET_KEY = key;
-  process.env.LOCAL_DATABASE_URL = process.env.DATABASE_URL; process.env.DATABASE_URL = target;
-  try {
-    const expected = Object.fromEntries(await Promise.all(['documents', 'whiteboards', 'hyperthreads'].map(async t => [t, Number((await source.query(`SELECT count(*) FROM ${t}`)).rows[0].count)])));
-    const sample = (await source.query('SELECT id, content FROM documents ORDER BY id LIMIT 1')).rows[0];
-    // db.ts creó su pool con DATABASE_URL al importarse por primera vez en este proceso: se usa un subproceso limpio.
-    // Asíncrono: este mismo proceso atiende la imitación de Storage.
-    const { execFile } = await import('node:child_process');
-    const run = (...args: string[]) => new Promise<string>((resolve, reject) => execFile(process.execPath, ['--import', './backend/node_modules/tsx/dist/loader.mjs', 'backend/transfer.ts', ...args],
-      { cwd: path.resolve(import.meta.dirname, '../..'), env: process.env, encoding: 'utf8' }, (error, stdout, stderr) => error ? reject(new Error(stderr || error.message)) : resolve(stdout)));
-    const output = await run();
-    assert.match(output, /Listo/);
-    const copy = new pg.Pool(poolConfig(target));
-    try {
-      for (const [table, count] of Object.entries(expected)) assert.equal(Number((await copy.query(`SELECT count(*) FROM ${table}`)).rows[0].count), count, table);
-      if (sample) assert.deepEqual((await copy.query('SELECT content FROM documents WHERE id=$1', [sample.id])).rows[0].content, sample.content);
-      assert.equal(Number((await copy.query('SELECT count(*) FROM documents WHERE change_xid IS NULL')).rows[0].count), 0);
-      assert.ok(fake.buckets.has('nontion-assets'));
-      assert.ok(fake.objects.size > 0, 'sube las imágenes locales');
-      // Segunda ejecución sin --reemplazar: no toca nada.
-      await assert.rejects(run(), /ya tiene datos/);
-      assert.match(await run('--reemplazar'), /Listo/);
-      const before = fake.objects.size;
-      assert.match(await run('--solo-imagenes'), /ya estaban/);
-      assert.equal(fake.objects.size, before);
-      assert.equal(Number((await copy.query('SELECT count(*) FROM documents')).rows[0].count), expected.documents);
-    } finally { await copy.end(); }
-  } finally {
-    process.env.DATABASE_URL = saved.db; process.env.LOCAL_DATABASE_URL = saved.local;
-    delete process.env.SUPABASE_URL; delete process.env.SUPABASE_SECRET_KEY;
-    fake.server.close(); await source.end();
   }
 });

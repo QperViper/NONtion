@@ -1,17 +1,17 @@
 # Espacio de Nicolás · nontion
 
-Espacio personal local para escribir con BlockNote, dibujar con Tldraw y conectar texto con páginas o pizarras. React + Vite + Tailwind, Zustand como entrada de la interfaz a la API, Express y PostgreSQL.
+Espacio personal local para escribir con BlockNote, dibujar con Tldraw y conectar texto con páginas o pizarras. React + Vite + Tailwind, Zustand como entrada de la interfaz a la API y Express. **Local-first:** los datos viven en un archivo (`backend/data/local_db.json`) y se sincronizan con Supabase cuando hay internet. No requiere PostgreSQL.
 
 ## Arranque local (desarrollo)
 
-Requisitos: Node.js compatible con Vite 8, pnpm y PostgreSQL en ejecución.
+Requisitos: Node.js compatible con Vite 8 y pnpm. No hace falta ninguna base de datos instalada.
 
 ```powershell
 pnpm install
 pnpm --dir backend install
 ```
 
-Copia `backend/.env.example` a `backend/.env` si todavía no existe y configura `DATABASE_URL` con tus credenciales **solo en ese archivo**. La base debe existir; en este equipo se llama `NONtion` (con esas mayúsculas).
+`backend/.env` es opcional. Sin él, nontion funciona solo en este equipo. Para sincronizar entre equipos, copia `backend/.env.example` a `backend/.env` y completa `SUPABASE_URL` y `SUPABASE_SECRET_KEY` (ver **Varios equipos con Supabase**).
 
 ```powershell
 npm run dev
@@ -38,31 +38,37 @@ El lanzador (`scripts/launch.mjs`) arranca la API en segundo plano en `http://12
 
 Para programar sigue usando `npm run dev` (recarga en caliente en `http://127.0.0.1:5173`). Si nontion ya está abierto, `dev` reutiliza esa API; para que tome cambios del backend, detenla antes con `npm run stop`.
 
-Las páginas de la versión de desarrollo (puerto 5173) y las del lanzador (puerto 4000) guardan sus borradores locales por separado. Los datos guardados en la base son los mismos.
+Las páginas de la versión de desarrollo (puerto 5173) y las del lanzador (puerto 4000) guardan sus borradores del navegador por separado. Los datos guardados en `local_db.json` son los mismos.
 
 ## Respaldos automáticos
 
-Mientras la API está en marcha, crea un respaldo al día en `backend/backups/daily/` y conserva los 14 más recientes. Cada respaldo incluye `database.json` (todas las tablas), las imágenes y, si PostgreSQL está instalado en el equipo, `database.dump` (restaurable con `pg_restore`). Cada carpeta trae un `LEEME.txt` con las instrucciones de restauración. Respaldo manual: `npm run backup`.
+Mientras la API está en marcha, crea un respaldo al día en `backend/backups/daily/` y conserva los 14 más recientes. Cada respaldo incluye `local_db.json` (restaurable tal cual), `database.json` (las filas de cada tabla) y las imágenes. `npm run backup` crea uno a mano.
+
+## Almacenamiento local (`backend/data/local_db.json`)
+
+- Todo el espacio (páginas, pizarras, conexiones, eventos y ajustes) está en un único archivo JSON. La API lo mantiene en memoria y lo guarda en cada cambio.
+- **Escritura atómica:** primero se escribe `local_db.json.tmp` (con `fsync`) y luego se reemplaza el original. Un corte de luz deja el archivo anterior o el nuevo, nunca uno a medias. Si aun así encontrara un archivo dañado, lo aparta como `local_db.danado-<fecha>.json` y se recupera del temporal o de Supabase.
+- Cada registro lleva `version`, `_base_version` (versión de Supabase en que se basó la edición), `_dirty` (cambio pendiente de subir), `updated_at` y `deleted_at`.
+- **La primera vez en un equipo**, si no existe `local_db.json`, se crea a partir del último respaldo diario (sirve sin internet) o se descarga de Supabase.
+- Si la carpeta del proyecto está dentro de **OneDrive** y se sincroniza entre la torre y el notebook, OneDrive también copiaría `local_db.json` de un equipo a otro y crearía conflictos de archivo. En ese caso define `NONTION_DATA_DIR=C:\nontion-datos` (una carpeta fuera de OneDrive) en `backend/.env` y mueve allí `backend/data/`.
 
 ## Varios equipos con Supabase
 
-La base de datos y las imágenes pueden vivir en Supabase para usar el mismo espacio en la torre y en el notebook. Cada equipo ejecuta su propia API local (nada queda expuesto en internet) y se conecta a la misma base.
+Cada equipo trabaja sobre su propio `local_db.json` (al instante, con o sin internet) y la API local sincroniza con Supabase en segundo plano usando `@supabase/supabase-js`. Nada queda expuesto en internet.
 
-- **Arranque liviano:** al abrir solo se descargan títulos y metadatos; cada página o pizarra se descarga al abrirla. Guardar no devuelve el contenido completo.
-- **Cambios de otros equipos:** se consultan al volver a la ventana y cada 15 s mientras está visible (`/api/changes`, solo lo que cambió). Si una página abierta cambió en otro equipo, se recarga sola. Si ambos editaron el mismo recurso sin sincronizar, aparece el conflicto de siempre para elegir versión.
+- **Cuándo se sincroniza:** al abrir nontion, unos 4 s después de que dejas de escribir, cada minuto (para traer lo del otro equipo), con el botón de estado de la barra lateral o con **Ctrl+Alt+S** (Ctrl+Shift+S es «tachado» en el editor). También con doble clic en **`Sincronizar con Supabase.cmd`** o `npm run sync`.
+- **Sin internet:** la app no lo nota. Los cambios quedan marcados como pendientes y se suben al volver la conexión; la barra lateral muestra «Sin conexión · N pendientes».
+- **Subida segura:** cada cambio se sube con un `update` condicionado a la versión en que se basó (`WHERE version = _base_version`). Si otro equipo escribió entretanto, no se sobrescribe nada.
+- **Conflictos (torre y notebook editaron lo mismo):** la versión de la nube se queda como está y **tu versión local se guarda como página/pizarra/evento nuevo** con el título `«… (Conflicto local <fecha>)»`. Los ajustes del espacio se fusionan campo por campo (gana lo que cambiaste en ese equipo). Si solo moviste algo a la papelera o lo marcaste como favorito, se reaplica sin crear copia.
+- **Descarga:** se comparan las versiones de cada registro con la nube y se descarga solo lo nuevo, sin pisar lo que tenga cambios locales. (No se usa la hora de cada equipo: un reloj atrasado podría hacer que se saltara un cambio.)
+- **Imágenes:** se guardan primero en `backend/data/assets/` y se suben a un bucket privado de Supabase Storage al momento o en la siguiente sincronización. Una imagen subida desde otro equipo se descarga la primera vez que se ve.
+- **Clave:** usa la *Secret key* (`sb_secret_…`). Las tablas tienen RLS activo sin políticas, así que la clave pública no puede leerlas; si la nube «parece vacía», la sincronización se detiene sin borrar nada local.
+- **Papelera:** lo que lleva más de 30 días en la papelera se borra definitivamente; si hay sincronización, primero se confirma el borrado en Supabase. Si el otro equipo lo restauró, no se borra.
 - **Preferencias de pantalla** (ancho y estado de la barra lateral, ancho del panel de apariencia) son de cada equipo. Tema, fondo y personalización se comparten.
-- **Imágenes:** se suben a un bucket privado de Supabase Storage. `backend/data/assets/` queda como caché local: una imagen subida desde otro equipo se descarga la primera vez que se ve. Las direcciones `/assets/…` guardadas en las notas no cambian.
-- **Seguridad:** la conexión a la base va cifrada. La migración 003 activa RLS en las tablas para cerrar el acceso por la API pública de Supabase; la app no se ve afectada porque se conecta como dueña de las tablas.
-
-### Pasar tu base local a Supabase (una vez, en el equipo que tiene los datos)
-
-1. En `backend/.env`, mueve tu dirección actual a `LOCAL_DATABASE_URL=` y pon en `DATABASE_URL=` la de Supabase (**Connect → Session pooler**, con tu contraseña). Añade `SUPABASE_URL` y `SUPABASE_SECRET_KEY` (ver `backend/.env.example`).
-2. Doble clic en **`Pasar a Supabase.cmd`**. Detiene nontion, aplica migraciones pendientes a la base local, guarda una copia en `backend/backups/antes-de-supabase-*.json`, crea las tablas en Supabase, copia todo en una sola transacción (verificando los recuentos), sube las imágenes y vuelve a abrir la app.
-3. La base local no se modifica. Si Supabase ya tiene datos, el traspaso se niega; `--reemplazar` los sustituye. Si solo fallan las imágenes, `"Pasar a Supabase.cmd" --solo-imagenes` reintenta ese paso.
 
 ### Otro equipo (notebook)
 
-Clona el repositorio, ejecuta `pnpm install` y `pnpm --dir backend install`, crea `backend/.env` con `DATABASE_URL`, `SUPABASE_URL` y `SUPABASE_SECRET_KEY` (sin `LOCAL_DATABASE_URL`) y haz doble clic en `Instalar NONtion.cmd`. No necesita PostgreSQL instalado.
+Clona el repositorio, ejecuta `pnpm install` y `pnpm --dir backend install`, crea `backend/.env` con `SUPABASE_URL` y `SUPABASE_SECRET_KEY` y haz doble clic en `Instalar NONtion.cmd`. La primera vez descarga tu espacio desde Supabase.
 
 ## Pizarra en la tablet Android por USB
 
@@ -81,6 +87,14 @@ La tablet usa la app del equipo al que está conectada (torre o notebook) por el
 ## Actualizaciones
 
 Después de un `git pull`, abre nontion como siempre: si el código cambió desde que arrancó, el lanzador reinicia la API, instala dependencias nuevas (si cambió `pnpm-lock.yaml`) y recompila la interfaz.
+
+## Persistencia y recuperación
+
+- Cada recurso tiene una versión. Los PATCH requieren la versión de partida: una escritura antigua (otra pestaña) recibe HTTP 409 y no sobrescribe la versión nueva.
+- Zustand actualiza la interfaz al escribir y agrupa los cambios durante 600 ms. Las peticiones de un recurso se serializan, y los fallos se reintentan. La API responde cuando el cambio ya está en el disco.
+- Los cambios pendientes de la pestaña se respaldan además en IndexedDB. Al recargar la misma pestaña se recuperan; los de otras sesiones aparecen en el inspector para exportar o recuperar explícitamente.
+- Si una página abierta cambia por la sincronización, se recarga sola. Un conflicto entre pestañas ofrece exportar el borrador, conservarlo o usar la versión guardada.
+- Las imágenes PNG/JPG/WebP/GIF (hasta 12 MB) se guardan en `backend/data/assets/`. Conserva **`local_db.json` y ese directorio** juntos si mueves la aplicación (con Supabase configurado, ambos se recuperan de la nube).
 
 ## Persistencia y recuperación
 
@@ -105,7 +119,7 @@ Usa **Personalizar** o clic derecho sobre los controles de la aplicación para c
 
 La opción **Reducir animación de imágenes** congela las imágenes gestionadas por la interfaz. Las imágenes dentro de los editores dependen del comportamiento propio de cada editor. Las URL de imágenes externas siguen dependiendo de su servidor.
 
-**Apariencia → Fondo de pantalla → Vignette Bloom** activa el mosaico Canvas2D animado con la foto y el preset proporcionados. La selección se conserva en PostgreSQL; **Color o imagen** recupera el fondo anterior. **Reducir animaciones** muestra un fotograma fijo. El motor es una reconstrucción de la especificación, no el código privado de 21st.dev; sus detalles y comprobaciones están en `src/effects/README.md`.
+**Apariencia → Fondo de pantalla → Vignette Bloom** activa el mosaico Canvas2D animado con la foto y el preset proporcionados. La selección se guarda con los ajustes del espacio; **Color o imagen** recupera el fondo anterior. **Reducir animaciones** muestra un fotograma fijo. El motor es una reconstrucción de la especificación, no el código privado de 21st.dev; sus detalles y comprobaciones están en `src/effects/README.md`.
 
 ## Comprobaciones
 
@@ -115,16 +129,6 @@ npm run lint
 npm run build
 ```
 
-El build comprueba los tipos del frontend y del backend. Las pruebas normales cubren orden de guardado, recuperación, conflictos, fallos del respaldo y validación de PATCH.
+El build comprueba los tipos del frontend y del backend. `npm test` cubre la API sobre un `local_db.json` temporal (versiones, conflictos entre pestañas, conexiones, papelera, eventos, imágenes), la escritura atómica y la sincronización entre dos equipos con una nube simulada: creación, actualización limpia, el caso torre/notebook sin internet, escrituras simultáneas, fusión de ajustes, borrados definitivos y salvaguardas. Las pruebas nunca tocan `backend/data/` ni tu Supabase.
 
-Para comprobar además la API con PostgreSQL, primero aplica las migraciones iniciando la API. Luego:
-
-```powershell
-$env:NONTION_INTEGRATION = '1'
-npm test
-Remove-Item Env:NONTION_INTEGRATION
-```
-
-Las pruebas de integración crean y limpian únicamente sus registros temporales. Verifican escrituras concurrentes, JSONB, conexiones, papelera, validación y subida de GIF; no modifican tus ajustes ni tus notas. Las páginas y pizarras marcadas con «QA» creadas durante la revisión visual se pueden enviar a la papelera desde la app.
-
-El uso en producción, cuentas de varios usuarios, sincronización colaborativa y edición offline completa quedan fuera de esta entrega. Tldraw muestra su aviso de licencia de producción; el desarrollo local no configura una licencia.
+El uso en producción, cuentas de varios usuarios y edición colaborativa en tiempo real quedan fuera de esta entrega. Tldraw muestra su aviso de licencia de producción; el desarrollo local no configura una licencia.

@@ -1,17 +1,16 @@
 import { existsSync } from 'node:fs';
-import { mkdir, readdir, rename, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { RequestHandler } from 'express';
-import './db.ts'; // carga backend/.env
+import { dataDir } from './env.ts';
 
 /**
- * Imágenes subidas. Siempre se guardan en backend/data/assets/ y, si Supabase Storage está configurado,
- * también en la nube. En ese caso la carpeta local funciona como caché: una imagen subida desde otro
- * equipo se descarga la primera vez que se pide y después se sirve desde el disco.
+ * Imágenes subidas. Siempre se guardan primero en backend/data/assets/ (funciona sin internet) y, si
+ * Supabase Storage está configurado, se suben a la nube en el momento o, si no hay conexión, en la
+ * siguiente sincronización. Una imagen subida desde otro equipo se descarga la primera vez que se pide.
  * Las URL guardadas en notas y pizarras (/assets/<uuid>.<ext>) no cambian.
  */
-export const assetsDir = fileURLToPath(new URL('./data/assets/', import.meta.url));
+export const assetsDir = path.join(dataDir, 'assets');
 export const ASSET_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(png|jpg|webp|gif)$/;
 /** Versión reducida de una imagen (máx. 1600 px, WebP), generada por el navegador: «previews/<uuid>.webp». */
 export const PREVIEW_NAME = /^previews\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.webp$/;
@@ -95,22 +94,35 @@ async function writeCache(name: string, data: Buffer) {
   await rename(temporary, target).catch(async () => { await unlink(temporary).catch(() => {}); });
 }
 
-/** Guarda (o reemplaza) la versión reducida de una imagen: disco y, si corresponde, Supabase. */
+/** Intenta subir a la nube sin bloquear: devuelve false si no se pudo (queda pendiente para la sincronización). */
+async function tryUpload(name: string, data: Buffer) {
+  if (!cloudConfig()) return true;
+  try { await uploadToCloud(name, data); return true; }
+  catch (error) { console.warn(`Imagen ${name} guardada en local; se subirá a Supabase al sincronizar (${(error as Error).message}).`); return false; }
+}
+
+/** Guarda (o reemplaza) la versión reducida de una imagen. uploaded=false: falta subirla a la nube. */
 export async function savePreview(id: string, data: Buffer) {
   const name = `previews/${id}.webp`;
   if (!PREVIEW_NAME.test(name)) throw new Error('Nombre inválido');
   await writeCache(name, data);
-  await uploadToCloud(name, data);
-  return `/assets/${name}`;
+  return { url: `/assets/${name}`, name, uploaded: await tryUpload(name, data) };
 }
 
-/** Guarda una imagen nueva: disco local y, si corresponde, la nube. Si la nube falla, no queda a medias. */
+/** Guarda una imagen nueva en el disco local y, si hay conexión, en la nube. uploaded=false: queda pendiente. */
 export async function saveAsset(name: string, data: Buffer) {
   await mkdir(assetsDir, { recursive: true });
+  await writeFile(path.join(assetsDir, name), data, { flag: 'wx' });
+  return { uploaded: await tryUpload(name, data) };
+}
+
+/** Sube una imagen pendiente (la usa la sincronización). Si el archivo ya no existe, se da por resuelta. */
+export async function uploadPending(name: string) {
+  if (!servable(name)) return true;
   const file = path.join(assetsDir, name);
-  await writeFile(file, data, { flag: 'wx' });
-  try { await uploadToCloud(name, data); }
-  catch (error) { await unlink(file).catch(() => {}); throw error; }
+  if (!existsSync(file)) return true;
+  await uploadToCloud(name, await readFile(file));
+  return true;
 }
 
 const downloads = new Map<string, Promise<Buffer | null>>();

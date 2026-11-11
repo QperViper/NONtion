@@ -43,7 +43,7 @@ function readEnv(file) {
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 let apiStartedAt = 0;
-/** 'ok' = API y base listas, 'db' = API en marcha pero sin base de datos, null = no responde. */
+/** 'ok' = API lista, 'db' = API en marcha pero todavía no lista (versiones anteriores), null = no responde. */
 async function health() {
   try {
     const response = await fetch(`${appUrl}api/health`, { signal: AbortSignal.timeout(4000) });
@@ -183,7 +183,9 @@ main{max-width:640px}h1{font-size:22px}code{background:#2a2a2a;padding:2px 6px;b
 }
 
 /** Archivos que quedaron de versiones anteriores y ya no se usan: se borran solos. */
-const OBSOLETE = ['backend/sideBrowser.ts', 'backend/tests/sideBrowser.test.ts'];
+const OBSOLETE = ['backend/sideBrowser.ts', 'backend/tests/sideBrowser.test.ts',
+  // PostgreSQL local retirado: los datos viven en backend/data/local_db.json y se sincronizan con Supabase.
+  'backend/db.ts', 'backend/migrate.ts', 'backend/transfer.ts', 'Pasar a Supabase.cmd'];
 function removeObsolete() {
   for (const file of OBSOLETE) {
     const full = path.join(root, file);
@@ -197,35 +199,33 @@ async function main() {
   if (!existsSync(path.join(root, 'node_modules')) || !existsSync(path.join(root, 'backend', 'node_modules'))) {
     return showProblem('Faltan las dependencias', 'Abre una terminal en la carpeta del proyecto y ejecuta: pnpm install  y luego  pnpm --dir backend install');
   }
-  if (!existsSync(path.join(root, 'backend', '.env'))) {
-    return showProblem('Falta backend/.env', 'Copia backend/.env.example a backend/.env y escribe tu DATABASE_URL.');
-  }
+  // backend/.env es opcional: sin él, nontion funciona solo en este equipo (sin sincronizar con Supabase).
+  if (!existsSync(path.join(root, 'backend', '.env'))) log('Sin backend/.env: nontion funcionará solo en local, sin sincronizar.');
   let state = await health();
   if (state !== null && await restartIfOutdated()) state = null;
-  if (state !== null) { log(`La API ya estaba en marcha${state === 'db' ? ' (sin conexión con la base de datos: se abre con la copia local)' : ''}.`); open(appUrl); return; }
+  if (state !== null) { log('La API ya estaba en marcha.'); open(appUrl); return; }
   if (state === null) {
     try { ensureDependencies(); } catch (error) { return showProblem('Faltan dependencias', error.message); }
     try { ensureBuild(); } catch (error) { return showProblem('La interfaz no compiló', error.message); }
   }
-  // Al encender el equipo la base de datos o la red pueden tardar: se reintenta con paciencia.
+  // Los datos son locales: la API suele estar lista en uno o dos segundos (al encender el equipo puede tardar más).
   const deadline = Date.now() + (startup ? 180_000 : 60_000);
-  // Si el vigilante ya está en marcha (por ejemplo, esperando a que vuelva internet), no se lanza otro.
+  // Si el vigilante ya está en marcha, no se lanza otro.
   let pid = isNode(readPid(supervisorPidFile)) ? readPid(supervisorPidFile) : 0;
   let started = 0, dbSince = 0;
   while (Date.now() < deadline) {
     state = await health();
     if (state === 'ok') { log(`Lista en ${appUrl} (${((Date.now() - launchedAt) / 1000).toFixed(1)} s desde el clic)`); open(appUrl); return; }
-    // Sin internet (por ejemplo, en la universidad): la app abre igual con la copia local y se sincroniza al volver.
-    // (se espera unos segundos: al arrancar, la API tarda un momento en conectar con Supabase).
+    // (Compatibilidad: una API antigua respondía 503 mientras no tenía base de datos.)
     if (state === 'db') dbSince ||= Date.now(); else dbSince = 0;
-    if (state === 'db' && Date.now() - dbSince > 8000) { log(`Abierta sin conexión con la base de datos (${((Date.now() - launchedAt) / 1000).toFixed(1)} s desde el clic). Se sigue reintentando.`); open(appUrl); return; }
+    if (state === 'db' && Date.now() - dbSince > 8000) { log('Abierta aunque la API no confirmó estar lista.'); open(appUrl); return; }
     // El que acabamos de iniciar basta con verlo vivo; uno heredado se confirma que siga siendo Node (más lento en Windows).
     if (state === null && !(pid && (pid === started ? alive(pid) : isNode(pid)))) { pid = startApi(); started = pid; }
     await sleep(250);
   }
   let last = '';
   try { last = readFileSync(path.join(logs, 'api.log'), 'utf8').trim().split(/\r?\n/).filter(line => !/La API se detuvo/.test(line)).pop() || ''; } catch { /* sin registro todavía */ }
-  showProblem('La API no arrancó', `${last ? `Último mensaje: «${last}». ` : ''}Suele deberse a la DATABASE_URL, a que la base de datos o internet no están disponibles, o a otro programa usando el puerto ${port}. nontion sigue reintentando solo en segundo plano.`);
+  showProblem('La API no arrancó', `${last ? `Último mensaje: «${last}». ` : ''}Suele deberse a otro programa usando el puerto ${port} o a un error en backend/.env. nontion sigue reintentando solo en segundo plano.`);
 }
 
 main().catch(error => showProblem('Error inesperado del lanzador', error.stack || error.message));

@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { validateEvent } from '../validation.ts';
+import { startApi } from './harness.ts';
 
 test('validación de eventos: campos obligatorios, fechas, prioridad, emoji y color', () => {
   const ok = { title: ' Prueba ', startAt: '2026-11-10T13:00:00.000Z', endAt: '2026-11-10T14:00:00-03:00' };
@@ -26,14 +27,9 @@ test('validación de eventos: campos obligatorios, fechas, prioridad, emoji y co
   assert.equal(validateEvent({ emoji: '' })[0].value, null);
 });
 
-test('API de eventos: crear sin duplicar, editar con versión, sincronizar, borrar y restaurar', { skip: process.env.NONTION_INTEGRATION !== '1' }, async t => {
-  const { app } = await import('../app.ts'); const { pool } = await import('../db.ts');
-  const server = app.listen(0, '127.0.0.1'); await new Promise<void>(resolve => server.on('listening', resolve));
-  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api`;
-  const call = async (path: string, method = 'GET', body?: unknown) => {
-    const res = await fetch(`${base}${path}`, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
-    return { status: res.status, data: await res.json() };
-  };
+test('API de eventos: crear sin duplicar, editar con versión, sincronizar, borrar y restaurar', async t => {
+  const api = await startApi();
+  const { call } = api;
   const id = randomUUID();
   try {
     const boot = await call('/bootstrap');
@@ -46,7 +42,7 @@ test('API de eventos: crear sin duplicar, editar con versión, sincronizar, borr
       assert.equal(first.data.priority, 'urgente'); assert.equal(first.data.version, 1); assert.equal(first.data.completed, false);
       const again = await call('/events', 'POST', input);
       assert.equal(again.status, 200); assert.equal(again.data.id, id);
-      assert.equal(Number((await pool.query('SELECT count(*) FROM events WHERE id=$1', [id])).rows[0].count), 1);
+      assert.equal(api.localDb.all('events').filter(e => e.id === id).length, 1);
     });
     await t.test('editar exige la versión y detecta conflictos entre equipos', async () => {
       const done = await call(`/events/${id}`, 'PATCH', { version: 1, completed: true, endAt: '2026-11-12T15:00:00.000Z' });
@@ -54,7 +50,7 @@ test('API de eventos: crear sin duplicar, editar con versión, sincronizar, borr
       const stale = await call(`/events/${id}`, 'PATCH', { version: 1, title: 'viejo' });
       assert.equal(stale.status, 409); assert.equal(stale.data.current.version, 2);
       const backwards = await call(`/events/${id}`, 'PATCH', { version: 2, endAt: '2026-11-12T10:00:00.000Z' });
-      assert.equal(backwards.status, 400, 'la base rechaza un término anterior al inicio');
+      assert.equal(backwards.status, 400, 'se rechaza un término anterior al inicio');
       assert.equal((await call(`/events/${randomUUID()}`, 'PATCH', { version: 1, title: 'x' })).status, 404);
       assert.equal((await call('/events/no-es-uuid', 'PATCH', { version: 1, title: 'x' })).status, 400);
     });
@@ -74,8 +70,5 @@ test('API de eventos: crear sin duplicar, editar con versión, sincronizar, borr
       assert.equal((await call('/events', 'POST', { ...input, id: randomUUID(), endAt: '2026-11-01T00:00:00Z' })).status, 400);
       assert.equal((await call('/events', 'POST', { ...input, id: randomUUID(), documentId: randomUUID() })).status, 400);
     });
-  } finally {
-    await pool.query('DELETE FROM events WHERE title LIKE $1', ['QA %']);
-    server.close(); await pool.end();
-  }
+  } finally { await api.close(); }
 });

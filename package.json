@@ -9,6 +9,7 @@
     "stop": "node scripts/stop.mjs",
     "serve": "node --import ./backend/node_modules/tsx/dist/loader.mjs backend/server.ts --ui",
     "backup": "node --import ./backend/node_modules/tsx/dist/loader.mjs backend/backup.ts",
+    "sync": "node --import ./backend/node_modules/tsx/dist/loader.mjs backend/sync-cli.ts",
     "dev:ui": "vite",
     "dev:api": "node --import ./backend/node_modules/tsx/dist/loader.mjs backend/server.ts",
     "typecheck": "tsc -b && node backend/node_modules/typescript/bin/tsc -p backend/tsconfig.json --noEmit",

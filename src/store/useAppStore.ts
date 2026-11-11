@@ -14,7 +14,7 @@ interface Bootstrap { cursor: string; settings: Row; documents: Row[]; whiteboar
 interface Changes extends Omit<Bootstrap,'settings'> { settings: Row | null; }
 interface AppState extends Settings {
   isLoaded: boolean; loading: boolean;
-  /** Supabase no responde: se muestra la copia local y los cambios esperan en este equipo. */
+  /** El servidor local no responde: se muestra la copia del navegador y los cambios esperan en esta pestaña. */
   offline: boolean; loadError: string | null; error: string | null;
   settingsVersion: number; documents: Document[]; whiteboards: Whiteboard[]; connections: Hiperhilo[];
   events: CalendarEvent[];
@@ -62,7 +62,7 @@ let bootstrapPromise: Promise<void> | null = null;
 let cursor = '';
 let refreshing: Promise<void> | null = null;
 const loading = new Map<string,Promise<void>>();
-// ── Copia local (solo lectura; lo que se guarda va siempre a Supabase) ──
+// ── Copia del navegador (solo lectura; lo que se guarda va siempre al servidor local, que sincroniza con Supabase) ──
 /** Último espacio recibido del servidor (filas sin contenido + cursor), para abrir sin conexión. */
 let workspace: Bootstrap | null = null;
 let workspaceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -92,10 +92,12 @@ async function pruneCache(data: Bootstrap) {
   for (const key of await cacheKeys()) if (key.startsWith('content:') && !alive.has(key)) void cacheDelete(key);
 }
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve,ms));
-/** Pide el espacio; si la API todavía está conectando con Supabase (503) o no responde, reintenta hasta el plazo. */
+/** Pide el espacio; si la API todavía está arrancando (503) o no responde, reintenta hasta el plazo. */
 async function fetchBootstrap(deadline: number): Promise<Bootstrap> {
   for (;;) {
-    try { return await request<Bootstrap>('/bootstrap'); }
+    // Una petición colgada tampoco puede pasar del plazo.
+    const late = new Promise<never>((_resolve,reject) => setTimeout(() => reject(new ApiError(0,'El servidor local no respondió a tiempo.')),Math.max(0,deadline - Date.now())));
+    try { return await Promise.race([request<Bootstrap>('/bootstrap'),late]); }
     catch (e) {
       const retryable = e instanceof ApiError && (e.status === 503 || e.status === 0);
       if (!retryable || Date.now() + 1000 > deadline) throw e;
@@ -174,14 +176,14 @@ export const useAppStore = create<AppState>((set,get) => ({
     set({loading:true,loadError:null});
     bootstrapPromise = (async () => {
       try {
-        // Siempre se intenta Supabase primero; la copia local solo aparece si no responde en ~6 s.
+        // Siempre se intenta el servidor local primero; la copia del navegador solo aparece si no responde en ~6 s.
         const live = fetchBootstrap(Date.now() + OFFLINE_AFTER);
         let data: Bootstrap, offline = false;
         try { data = await live; }
         catch (e) {
           const cached = await cacheGet<Bootstrap>('workspace');
           if (!cached) {
-            // Sin copia (primera vez en este equipo): se sigue esperando a Supabase un poco más.
+            // Sin copia (primera vez en este navegador): se sigue esperando al servidor un poco más.
             data = await fetchBootstrap(Date.now() + 20_000).catch(() => { throw e; });
           } else { data = cached; offline = true; }
         }

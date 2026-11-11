@@ -1,9 +1,9 @@
-import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { copyFile, link, mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, link, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { pool } from './db.ts';
+import { TABLES, publicRow } from './fileStorage.ts';
+import type { FileStorageService, TableName } from './fileStorage.ts';
 import { assetsDir, cloudConfig, syncCacheFromCloud } from './storage.ts';
 
 export const backupRoot = fileURLToPath(new URL('./backups/daily/', import.meta.url));
@@ -16,36 +16,6 @@ export async function listBackups(): Promise<string[]> {
   if (!existsSync(backupRoot)) return [];
   const names = await readdir(backupRoot);
   return names.filter(name => /^\d{4}-\d{2}-\d{2}T[\d-]+Z$/.test(name)).sort().reverse();
-}
-
-function findPgDump(): string | null {
-  const exe = process.platform === 'win32' ? 'pg_dump.exe' : 'pg_dump';
-  for (const dir of (process.env.PATH || '').split(path.delimiter)) {
-    if (dir && existsSync(path.join(dir, exe))) return path.join(dir, exe);
-  }
-  return null;
-}
-
-/** Usa la versión instalada más reciente: un pg_dump nuevo puede leer servidores más antiguos. */
-async function findWindowsPgDump(): Promise<string | null> {
-  for (const base of [process.env.ProgramFiles, process.env['ProgramFiles(x86)']]) {
-    const pg = base && path.join(base, 'PostgreSQL');
-    if (!pg || !existsSync(pg)) continue;
-    const versions = (await readdir(pg)).filter(v => /^\d+(\.\d+)?$/.test(v)).sort((a, b) => parseFloat(b) - parseFloat(a));
-    for (const version of versions) {
-      const exe = path.join(pg, version, 'bin', 'pg_dump.exe');
-      if (existsSync(exe)) return exe;
-    }
-  }
-  return null;
-}
-
-function run(file: string, args: string[]) {
-  return new Promise<void>((resolve, reject) => {
-    execFile(file, args, { timeout: 5 * 60 * 1000, windowsHide: true }, (error, _stdout, stderr) => {
-      if (error) reject(new Error(stderr.trim().split('\n').pop() || error.message)); else resolve();
-    });
-  });
 }
 
 /** Las imágenes no cambian nunca (nombre UUID, escritura exclusiva): un enlace duro evita duplicar espacio. */
@@ -64,50 +34,32 @@ async function snapshotAssets(target: string) {
 }
 
 /**
- * Copia completa: database.json (todas las tablas, lectura coherente), imágenes y,
- * si PostgreSQL está instalado en el equipo, también database.dump (restaurable con pg_restore).
+ * Copia completa: local_db.json tal cual (restaurable copiándolo a backend/data/), database.json con las
+ * filas de cada tabla (mismo formato que los respaldos de la época de PostgreSQL) e imágenes.
  */
-export async function backupNow(): Promise<string> {
+export async function backupNow(db: FileStorageService): Promise<string> {
   const name = new Date().toISOString().replace(/[:.]/g, '-');
   const partial = path.join(backupRoot, `${name}.partial`);
   await mkdir(partial, { recursive: true });
   try {
-    const client = await pool.connect();
-    const tables: Record<string, unknown[]> = {};
-    try {
-      await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
-      const list = await client.query<{ tablename: string }>("SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename");
-      for (const { tablename } of list.rows) tables[tablename] = (await client.query(`SELECT * FROM "${tablename.replaceAll('"', '""')}"`)).rows;
-      await client.query('COMMIT');
-    } catch (error) {
-      await client.query('ROLLBACK').catch(() => {});
-      throw error;
-    } finally { client.release(); }
+    const snapshot = db.snapshot();
+    await writeFile(path.join(partial, 'local_db.json'), JSON.stringify(snapshot));
+    const tables = Object.fromEntries(TABLES.map(table => [table, Object.values(snapshot[table]).filter(row => !row._purge).map(row => publicRow(row))]));
     await writeFile(path.join(partial, 'database.json'), JSON.stringify({ createdAt: new Date().toISOString(), tables }));
-    // Con Supabase, la carpeta local es una caché: primero se completan las imágenes subidas desde otro equipo.
+    // Con Supabase, la carpeta local de imágenes se completa primero con las subidas desde otro equipo.
     let cloudNote = '';
     if (cloudConfig()) {
       try { cloudNote = ` (descargadas de la nube para completar: ${await syncCacheFromCloud()})`; }
       catch (error) { cloudNote = ` (no se pudo completar desde la nube: ${(error as Error).message})`; }
     }
     const assets = await snapshotAssets(path.join(partial, 'assets'));
-    let dump = 'no disponible (pg_dump no está instalado en este equipo)';
-    const pgDump = findPgDump() ?? (process.platform === 'win32' ? await findWindowsPgDump() : null);
-    if (pgDump && process.env.DATABASE_URL) {
-      try {
-        await run(pgDump, ['--format=custom', '--no-owner', '--no-privileges', `--file=${path.join(partial, 'database.dump')}`, `--dbname=${process.env.DATABASE_URL}`]);
-        dump = 'database.dump';
-      } catch (error) { dump = `falló: ${(error as Error).message}`; }
-    }
     await writeFile(path.join(partial, 'LEEME.txt'), [
       `Respaldo de nontion · ${new Date().toLocaleString('es')}`,
       `Tablas: ${Object.entries(tables).map(([t, rows]) => `${t} (${rows.length})`).join(', ')}`,
       `Imágenes: ${assets}${cloudNote}`,
-      `Volcado pg_dump: ${dump}`,
       '',
-      'database.json contiene todas las filas. Para restaurar database.dump:',
-      '  pg_restore --clean --if-exists --no-owner --dbname=<DATABASE_URL> database.dump',
-      'Copia la carpeta assets/ dentro de backend/data/assets/.',
+      'Para restaurar: con nontion cerrado, copia local_db.json a backend/data/local_db.json',
+      'y la carpeta assets/ dentro de backend/data/assets/. Al abrir, se sincroniza con Supabase.',
     ].join('\r\n'));
     const final = path.join(backupRoot, name);
     await rename(partial, final);
@@ -117,6 +69,23 @@ export async function backupNow(): Promise<string> {
     await rm(partial, { recursive: true, force: true }).catch(() => {});
     throw error;
   }
+}
+
+/**
+ * Filas del respaldo más reciente (para sembrar un local_db.json nuevo sin internet). Sirve también con
+ * los respaldos de la época de PostgreSQL. Devuelve null si no hay ninguno legible.
+ */
+export async function latestBackupTables(): Promise<{ source: string; tables: Partial<Record<TableName, Record<string, unknown>[]>> } | null> {
+  for (const name of await listBackups()) {
+    try {
+      const parsed = JSON.parse(await readFile(path.join(backupRoot, name, 'database.json'), 'utf8')) as { tables?: Record<string, Record<string, unknown>[]> };
+      if (!parsed.tables) continue;
+      const tables: Partial<Record<TableName, Record<string, unknown>[]>> = {};
+      for (const table of TABLES) if (Array.isArray(parsed.tables[table])) tables[table] = parsed.tables[table];
+      return { source: `backups/daily/${name}`, tables };
+    } catch { /* respaldo incompleto o de otro formato: se prueba el anterior */ }
+  }
+  return null;
 }
 
 async function prune() {
@@ -134,16 +103,16 @@ function ageOf(name: string) {
 }
 
 /** Respaldo diario mientras la API está en marcha: al arrancar si el último tiene más de 20 h, y luego cada hora se revisa. */
-export function scheduleBackups(): () => void {
+export function scheduleBackups(db: FileStorageService): () => void {
   let running = false;
   const check = async () => {
     if (running) return;
     running = true;
     try {
       const [latest] = await listBackups();
-      if (!latest || ageOf(latest) > MAX_AGE) console.log('Respaldo creado:', await backupNow());
+      if (!latest || ageOf(latest) > MAX_AGE) console.log('Respaldo creado:', await backupNow(db));
     } catch (error) {
-      console.error('No se pudo crear el respaldo diario:', (error as { code?: string }).code ?? (error as Error).message);
+      console.error('No se pudo crear el respaldo diario:', (error as Error).message);
     } finally { running = false; }
   };
   const first = setTimeout(() => { void check(); }, 30_000);
@@ -153,7 +122,10 @@ export function scheduleBackups(): () => void {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  backupNow().then(dir => console.log('Respaldo creado:', dir)).catch(error => {
-    console.error('No se pudo respaldar:', error.code ?? error.message); process.exitCode = 1;
-  }).finally(() => pool.end());
+  // Desde la consola (npm run backup). Si la API está abierta, conviene usar su respaldo automático:
+  // aquí se lee el archivo tal como está en el disco.
+  const { localDb } = await import('./localDb.ts');
+  backupNow(localDb).then(dir => console.log('Respaldo creado:', dir)).catch(error => {
+    console.error('No se pudo respaldar:', error.message); process.exitCode = 1;
+  });
 }

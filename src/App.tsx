@@ -10,6 +10,7 @@ import SaveInspector from './components/layout/SaveInspector';
 import TrashPanel from './components/layout/TrashPanel';
 import ResourcePanel from './components/ResourcePanel';
 import ControlButton from './components/ControlButton';
+import { isSyncShortcut, syncNow } from './lib/sync';
 import { resourceKey, resourcePath, useAppStore } from './store/useAppStore';
 import type { ResourceRef } from './store/useAppStore';
 import ImageAsset from './components/ImageAsset';
@@ -62,6 +63,8 @@ function Shell() {
   const focus=boardFocus&&/^\/pizarra\/[^/]+/.test(location.pathname);
   const [settings,setSettings]=useState(false),[trash,setTrash]=useState(false);
   useEffect(()=>{void fetchInitialData();},[fetchInitialData]);
+  // Ctrl+Alt+S: sincronizar ahora con Supabase (también con la barra lateral cerrada).
+  useEffect(()=>{const key=(e:KeyboardEvent)=>{if(isSyncShortcut(e)){e.preventDefault();void syncNow().catch(()=>{});}};window.addEventListener('keydown',key);return()=>window.removeEventListener('keydown',key);},[]);
   useEffect(()=>{const down=(e:KeyboardEvent)=>{if(e.key==='Escape'){useAppStore.getState().setEditingControl(null);if(useAppStore.getState().boardFocus&&!document.querySelector('.tl-container:focus-within'))useAppStore.getState().setBoardFocus(false);if(!useAppStore.getState().isSearchOpen){setSettings(false);setTrash(false);}}};window.addEventListener('keydown',down);return()=>window.removeEventListener('keydown',down);},[]);
   if(!loaded)return <div className="startup"><div className="glass-modal p-8 max-w-md"><h1 className="text-2xl font-semibold mb-3">Espacio de Nicolás</h1><p className="text-neutral-400" role="status">{loadError||'Conectando con tu espacio…'}</p>{loadError&&<button className="soft-button mt-5" disabled={loading} onClick={()=>{void useAppStore.getState().fetchInitialData();}}>Reintentar conexión</button>}</div></div>;
   return <div className={`app-shell${focus?' board-focus':''}`} style={{backgroundColor:theme}}>
@@ -74,7 +77,7 @@ function Shell() {
         <ActionControls zone="toolbar" onSettings={()=>setSettings(true)} onTrash={()=>setTrash(true)}/>
         <div className="ml-auto flex gap-2 items-center"><span className="text-xs text-neutral-500 hidden sm:inline">{offline?'Personal, sin conexión.':'Personal, conectado.'}</span><button className="quiet-button text-xs" onClick={()=>useAppStore.getState().setCustomizing(!customizing)}>{customizing?'Terminar personalización':'Personalizar'}</button></div>
       </div>
-      {offline&&<div className="offline-banner" role="status"><span>Sin conexión con Supabase · mostrando tu copia local. Lo que escribas queda guardado en este equipo y se envía solo al volver la conexión.</span><button className="underline shrink-0" onClick={()=>{void useAppStore.getState().refresh();useAppStore.getState().retrySaves();}}>Reintentar</button></div>}
+      {offline&&<div className="offline-banner" role="status"><span>El servidor local de nontion no responde · mostrando la copia de este navegador. Lo que escribas queda guardado aquí y se envía al volver.</span><button className="underline shrink-0" onClick={()=>{void useAppStore.getState().refresh();useAppStore.getState().retrySaves();}}>Reintentar</button></div>}
       {customizing&&<div className="customize-banner"><span>Modo Personalizar: pulsa un control para editarlo. Los ocultos vuelven a mostrarse.</span><button className="underline shrink-0" onClick={()=>useAppStore.getState().setCustomizing(false)}>Terminar</button></div>}
       <main className="workspace-content"><Routes><Route path="/" element={<Home/>}/><Route path="/pizarra" element={<Home boardsOnly/>}/><Route path="/pizarra/:boardId" element={<Panels kind="whiteboard"/>}/><Route path="/hilo/:threadId" element={<ThreadRoute/>}/><Route path="/camara" element={<Suspense fallback={<div className="p-8 text-neutral-400">Abriendo…</div>}><CameraPage/></Suspense>}/><Route path="/internet" element={<Suspense fallback={<div className="p-8 text-neutral-400">Abriendo…</div>}><InternetPage/></Suspense>}/><Route path="/calendario" element={<Suspense fallback={<div className="p-8 text-neutral-400">Abriendo calendario…</div>}><CalendarPage/></Suspense>}/><Route path="/:documentId" element={<Panels kind="document"/>}/><Route path="*" element={<div className="p-10">Esta dirección no existe.</div>}/></Routes></main>
     </div></div>

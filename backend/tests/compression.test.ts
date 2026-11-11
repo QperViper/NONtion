@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { gzipSync } from 'node:zlib';
+import { startApi } from './harness.ts';
 
-test('una pizarra grande enviada comprimida (gzip) se guarda completa y ocupa mucho menos', { skip: process.env.NONTION_INTEGRATION !== '1' }, async () => {
-  const { app } = await import('../app.ts'); const { pool } = await import('../db.ts');
-  const server = app.listen(0, '127.0.0.1'); await new Promise<void>(r => server.on('listening', r));
-  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api`;
+test('una pizarra grande enviada comprimida (gzip) se guarda completa y ocupa mucho menos', async () => {
+  const api = await startApi();
+  const base = `${api.origin}/api`;
   try {
     const board = await (await fetch(`${base}/whiteboards`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).json() as { id: string; version: number };
     // ~2 000 trazos: el tipo de pizarra que hoy viajaría completa en cada guardado.
@@ -21,6 +21,5 @@ test('una pizarra grande enviada comprimida (gzip) se guarda completa y ocupa mu
     assert.ok(ratio > 5, `comprime ${ratio.toFixed(1)}×`);
     console.log(`  pizarra de ${(json.length / 1024).toFixed(0)} KB → ${(gz.length / 1024).toFixed(0)} KB enviados (${ratio.toFixed(1)}× menos)`);
     await fetch(`${base}/whiteboards/${board.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: board.version + 1, deletedAt: new Date().toISOString() }) });
-    await pool.query('DELETE FROM whiteboards WHERE id=$1', [board.id]);
-  } finally { server.close(); await pool.end(); }
+  } finally { await api.close(); }
 });

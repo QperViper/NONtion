@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch server.ts",
     "start": "tsx server.ts",
-    "migrate": "tsx migrate.ts",
+    "sync": "tsx sync-cli.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts"
   },
@@ -23,16 +23,15 @@
   "packageManager": "pnpm@12.16.1",
   "type": "module",
   "dependencies": {
+    "@supabase/supabase-js": "^2.119.0",
     "cors": "^2.8.6",
     "dotenv": "^18.0.9",
-    "express": "^5.3.0",
-    "pg": "^8.23.1"
+    "express": "^5.3.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.6",
-    "@types/pg": "^8.23.1",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   }

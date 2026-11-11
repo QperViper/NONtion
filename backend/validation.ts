@@ -62,7 +62,7 @@ export function validatePatch(body: Record<string, unknown>, kind: 'settings' | 
         if (c.zone !== undefined && !['sidebar','toolbar'].includes(String(c.zone))) throw new HttpError(400, 'Zona inválida.');
       }
     }
-    return { column: fields[key], value: ['content', 'snapshot', 'customizations'].includes(key) ? JSON.stringify(value) : key === 'title' ? String(value).trim() || 'Sin título' : value };
+    return { column: fields[key], value: key === 'title' ? String(value).trim() || 'Sin título' : value };
   });
 }
 
@@ -113,7 +113,7 @@ function eventValue(key: string, value: unknown): unknown {
     default: throw new HttpError(400, `Campo no permitido: ${key}`);
   }
 }
-/** Valida un evento nuevo (create) o un cambio parcial. Devuelve columnas y valores listos para SQL. */
+/** Valida un evento nuevo (create) o un cambio parcial. Devuelve columnas y valores listos para guardar. */
 export function validateEvent(body: Record<string, unknown>, { create = false } = {}) {
   const entries = Object.entries(body).filter(([key]) => key !== 'version' && key !== 'id');
   if (!entries.length) throw new HttpError(400, 'No hay cambios.');
